@@ -145,7 +145,8 @@
       "esp_psram.h": "c",
       "esp_sleep.h": "c",
       "i2c.h": "c",
-      "all_debug.h": "c"
+      "all_debug.h": "c",
+      "uart.h": "c"
     }
   }
 }

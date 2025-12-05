@@ -23,6 +23,7 @@ void app_main(void)
 #endif
     //*=======任务初始化=======*//
     rtos_audio_control_init(); // 音频播報任务初始化
+    rtos_uart_init();          // 串口通信任务初始化
 #if BLUE_CONTROL
     rtos_blue_control_init(); // 蓝牙控制任务初始化
 #endif
@@ -39,7 +40,7 @@ static void hardware_studio_init(void)
 static void hardware_init(void)
 {
     // 串口通信启动
-    // uart_comm_init(uart_rx_callback, NULL);
+    uart_comm_init_all();
     // 舵机启动
     servo_init();
     // 电机及编码器初始化
