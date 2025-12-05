@@ -1,0 +1,60 @@
+# 构建输出
+/build/
+/sdkconfig
+/sdkconfig.old
+
+# 二进制文件
+*.bin
+*.elf
+*.map
+*.partitions
+
+# 日志文件
+*.log
+*.csv
+
+# IDE配置
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 测试数据
+/test_data/
+/sample_data/
+
+# 文档
+/docs/
+*.pdf
+
+# 增强版忽略规则
+**/third_party/
+**/test_harness/
+**/legacy/
+*.bak
+*.tmp
+*.swp
+build/analysis/
+docs/_site/
+
+# 生产环境忽略项
+**/test_bench/
+**/simulation_data/
+
+# 开发工具生成文件
+*.code-workspace
+*.cursor/
+
+# 临时构建产物
+/out/
+/dist/
+
+# 实验性代码
+/prototype/
+/experimental/
+
+# 设计文档
+/cad/
+/schematics/
