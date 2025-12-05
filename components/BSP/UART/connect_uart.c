@@ -38,7 +38,7 @@ static esp_err_t uart_apply_config_ex(uart_port_t port, int baud, gpio_num_t tx,
 
 static esp_err_t uart_comm_init_brain(void)
 {
-    return uart_apply_config_ex(BRAIN_UART_NUM, BRAIN_UART_BAUD_RATE, BRAIN_UART_TXD_PIN, BRAIN_UART_RXD_PIN, BRAIN_UART_RTS_PIN, BRAIN_UART_CTS_PIN, BRAIN_UART_RX_BUF_SIZE, BRAIN_UART_TX_BUF_SIZE, 0, 2);
+    return uart_apply_config_ex(BRAIN_UART_NUM, BRAIN_UART_BAUD_RATE, BRAIN_UART_TXD_PIN, BRAIN_UART_RXD_PIN, BRAIN_UART_RTS_PIN, BRAIN_UART_CTS_PIN, BRAIN_UART_RX_BUF_SIZE, BRAIN_UART_TX_BUF_SIZE, 32, 2);
 }
 
 static esp_err_t uart_comm_init_ci03t(void)

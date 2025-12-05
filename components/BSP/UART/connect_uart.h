@@ -32,7 +32,7 @@ extern "C"
     // =============================================================================
 
 #define BRAIN_UART_NUM UART_NUM_1             ///< 使用UART1端口
-#define BRAIN_UART_BAUD_RATE 1000000          ///< 波特率1000000
+#define BRAIN_UART_BAUD_RATE 460800           ///< 波特率460800
 #define BRAIN_UART_TXD_PIN GPIO_NUM_17        ///< TXD引脚IO17
 #define BRAIN_UART_RXD_PIN GPIO_NUM_18        ///< RXD引脚IO18
 #define BRAIN_UART_RTS_PIN UART_PIN_NO_CHANGE ///< 不使用RTS
