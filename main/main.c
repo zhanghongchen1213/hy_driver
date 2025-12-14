@@ -12,6 +12,8 @@ void app_main(void)
 {
     //*=======初始化NVS=======*//
     system_nvs_flash_init(); // 初始化NVS
+    //*=======初始化Wi-Fi=======*//
+    wifi_init_sta(); // 初始化Wi-Fi
     //*=======初始化硬件=======*//
     imu_init();             // IMU初始化
     hardware_studio_init(); // 初始化音频硬件

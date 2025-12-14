@@ -6,5 +6,6 @@
 #include "studio.h"
 #include "motor.h"
 #include "connect_uart.h"
+#include "connect_wifi.h"
 
 #endif

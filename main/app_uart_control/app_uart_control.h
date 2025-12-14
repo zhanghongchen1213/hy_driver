@@ -27,6 +27,7 @@ typedef struct
     uint8_t length;     ///< 数据包长度
 
     // TODO: 定义上行数据包的字段
+    bool chat_gpt_enable; ///< 是否启用ChatGPT
 
     uint32_t timestamp; ///< 时间戳 (ms)
     uint8_t end_flag;   ///< 结束标志 0x55

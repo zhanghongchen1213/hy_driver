@@ -5,6 +5,7 @@ set(src_dirs
             STUDIO
             Motor
             UART
+            Wifi
             )
 
 set(include_dirs
@@ -14,9 +15,11 @@ set(include_dirs
             STUDIO
             Motor
             UART
+            Wifi
             )
 
 set(requires
+            nvs_flash
             driver
             spiffs
             fatfs

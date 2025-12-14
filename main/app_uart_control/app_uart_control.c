@@ -1,6 +1,10 @@
 #include "app_uart_control.h"
 
 static const char *TAG = "APP_UART";
+
+static bool s_chat_gpt_enable = false;
+static uint32_t s_chat_gpt_expire_ms = 0;
+
 static QueueHandle_t s_ci03t_uart_queue = NULL;
 static QueueHandle_t s_brain_uart_queue = NULL;
 TaskHandle_t CI03T_UART_MONITOR_task_handle = NULL;
@@ -12,6 +16,20 @@ static void BRAIN_UART_TX_task(void *pvParameters);
 static void brain_parse_downlink(const uint8_t *buf, int len);
 static void brain_execute_command(const uart_downlink_packet_t *pkt);
 static void brain_send_uplink(void);
+static void chat_gpt_timeout_check(void);
+static inline void chat_gpt_set(bool enable)
+{
+    if (enable)
+    {
+        s_chat_gpt_enable = true;
+        s_chat_gpt_expire_ms = (uint32_t)(esp_timer_get_time() / 1000ULL) + 10000U;
+    }
+    else
+    {
+        s_chat_gpt_enable = false;
+        s_chat_gpt_expire_ms = 0;
+    }
+}
 void rtos_uart_init(void)
 {
     BaseType_t result = pdPASS;
@@ -64,7 +82,8 @@ static void CI03T_UART_MONITOR_task(void *pvParameters)
                     int n = uart_read_bytes(CI03T_UART_NUM, &byte, 1, 0);
                     if (n == 1)
                     {
-                        switch ((CI_03T_CMD)byte)
+                        CI_03T_CMD cmd = (CI_03T_CMD)byte;
+                        switch (cmd)
                         {
                         case WAKE_UP:
                             ESP_LOGI(TAG, "收到指令: 唤醒 (0x%02X)", byte);
@@ -79,6 +98,7 @@ static void CI03T_UART_MONITOR_task(void *pvParameters)
                             ESP_LOGW(TAG, "未知指令: 0x%02X", byte);
                             break;
                         }
+                        chat_gpt_set(cmd == CHAT_GPT);
                     }
                     rx--;
                 }
@@ -141,8 +161,20 @@ static void BRAIN_UART_TX_task(void *pvParameters)
 {
     for (;;)
     {
+        chat_gpt_timeout_check();
         brain_send_uplink();
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+static void chat_gpt_timeout_check(void)
+{
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    if (s_chat_gpt_enable && s_chat_gpt_expire_ms != 0 && now_ms >= s_chat_gpt_expire_ms)
+    {
+        s_chat_gpt_enable = false;
+        s_chat_gpt_expire_ms = 0;
+        ESP_LOGI(TAG, "交互超时, 自动关闭chat_gpt_enable");
     }
 }
 
@@ -216,6 +248,7 @@ static void brain_send_uplink(void)
     uart_uplink_packet_t pkt;
     pkt.start_flag = SEND_PACKET_START_FLAG;
     pkt.length = sizeof(uart_uplink_packet_t);
+    pkt.chat_gpt_enable = s_chat_gpt_enable;
     pkt.timestamp = (uint32_t)(esp_timer_get_time() / 1000ULL);
     pkt.end_flag = SEND_PACKET_END_FLAG;
     uart_write_bytes(BRAIN_UART_NUM, (const char *)&pkt, sizeof(pkt));
