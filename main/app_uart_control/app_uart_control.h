@@ -27,6 +27,8 @@ typedef struct
 
     uint16_t chat_gpt_count; ///< 用户触发CHAT_GPT的次数统计
 
+    float left_target_speed;  ///< 左电机目标速度
+    float right_target_speed; ///< 右电机目标速度
     float left_actual_speed;  ///< 左电机实际速度
     float right_actual_speed; ///< 右电机实际速度
     float left_kp;            ///< 左电机PID比例系数
@@ -39,7 +41,6 @@ typedef struct
     uint32_t timestamp; ///< 时间戳 (ms)
     uint8_t end_flag;   ///< 结束标志 0x55
 } __attribute__((packed)) uart_uplink_packet_t;
-
 
 /**
  * @brief 下行数据包结构（上位机下发给设备）

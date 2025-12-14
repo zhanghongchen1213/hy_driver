@@ -134,7 +134,6 @@ static void pid_control_task(void *arg)
             pid_calculate(ctrl);
 
             // 5. 输出控制
-
             float output = ctrl->state.output;
             motor_direction_t dir = MOTOR_DIRECTION_FORWARD;
             uint32_t speed_pwm = 0;
@@ -147,7 +146,7 @@ static void pid_control_task(void *arg)
             else
             {
                 dir = MOTOR_DIRECTION_REVERSE;
-                speed_pwm = (uint32_t)(output);
+                speed_pwm = (uint32_t)(-output);
             }
             // 执行电机控制
             motor_set_speed_and_dir(ctrl->motor_id, speed_pwm, dir);

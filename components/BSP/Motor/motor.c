@@ -977,7 +977,7 @@ esp_err_t motor_get_rpm(motor_id_t motor_id, float *rpm)
     if (*rpm != last_output_rpm)
     {
         last_output_rpm = *rpm;
-        ESP_LOGI(TAG, "%s转速详情: 计数差=%ld, 时间间隔=%.3fs, 电机RPS=%.2f, 输出RPS=%.2f, 输出RPM=%.2f", motor_name, count_diff, time_sec, motor_rps, output_rps, *rpm);
+        ESP_LOGD(TAG, "%s转速详情: 计数差=%ld, 时间间隔=%.3fs, 电机RPS=%.2f, 输出RPS=%.2f, 输出RPM=%.2f", motor_name, count_diff, time_sec, motor_rps, output_rps, *rpm);
     }
     return ESP_OK;
 }

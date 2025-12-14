@@ -210,6 +210,8 @@ static void brain_execute_command(const uart_downlink_packet_t *pkt)
     ESP_LOGI(TAG, "收到控制指令 时间戳=%u, 音频流标志=%u", (unsigned)pkt->timestamp, (unsigned)pkt->audio_stream_flag);
 
     // 更新PID目标速度
+    float left_target_speed = pkt->left_target_speed;
+    float right_target_speed = pkt->right_target_speed;
     app_pid_set_speed(MOTOR_A, pkt->left_target_speed);
     app_pid_set_speed(MOTOR_B, pkt->right_target_speed);
 
@@ -217,7 +219,7 @@ static void brain_execute_command(const uart_downlink_packet_t *pkt)
     app_pid_set_params(MOTOR_A, pkt->left_kp, pkt->left_ki, pkt->left_kd);
     app_pid_set_params(MOTOR_B, pkt->right_kp, pkt->right_ki, pkt->right_kd);
 
-    ESP_LOGD(TAG, "更新电机控制: 左目标=%.2f, 右目标=%.2f, 左PID[%.2f,%.2f,%.2f], 右PID[%.2f,%.2f,%.2f]",
+    ESP_LOGI(TAG, "更新电机控制: 左目标=%.2f, 右目标=%.2f, 左PID[%.2f,%.2f,%.2f], 右PID[%.2f,%.2f,%.2f]",
              pkt->left_target_speed, pkt->right_target_speed,
              pkt->left_kp, pkt->left_ki, pkt->left_kd,
              pkt->right_kp, pkt->right_ki, pkt->right_kd);
@@ -240,6 +242,7 @@ static void brain_send_uplink(void)
 
     if (pid_a != NULL)
     {
+        pkt.left_target_speed = pid_a->state.target_speed;
         pkt.left_actual_speed = pid_a->state.actual_speed;
         pkt.left_kp = pid_a->params.kp;
         pkt.left_ki = pid_a->params.ki;
@@ -248,6 +251,7 @@ static void brain_send_uplink(void)
 
     if (pid_b != NULL)
     {
+        pkt.right_target_speed = pid_b->state.target_speed;
         pkt.right_actual_speed = pid_b->state.actual_speed;
         pkt.right_kp = pid_b->params.kp;
         pkt.right_ki = pid_b->params.ki;
