@@ -32,7 +32,7 @@
 // 编码器参数定义 - N20电机官方参数
 #define ENCODER_PPR 7              ///< 编码器每转脉冲数（基础脉冲，7PPR）
 #define ENCODER_OUTPUT_PPR 2654.1f ///< 减速后输出轴编码线数（官方标准：2654.1线/转）
-#define ENCODER_SAMPLE_TIME_MS 2   ///< 编码器采样时间间隔（毫秒）
+#define ENCODER_SAMPLE_TIME_MS 1   ///< 编码器采样时间间隔（毫秒）
 
 // PCNT计数器限制值定义
 #define PCNT_UNIT_MAX_COUNT 32767  ///< PCNT单元最大计数值

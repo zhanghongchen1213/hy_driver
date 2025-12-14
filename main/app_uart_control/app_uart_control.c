@@ -1,4 +1,5 @@
 #include "app_uart_control.h"
+#include "app_pid_control.h"
 
 static const char *TAG = "APP_UART";
 
@@ -207,6 +208,19 @@ static void brain_execute_command(const uart_downlink_packet_t *pkt)
 {
     s_audio_stream_flag = pkt->audio_stream_flag;
     ESP_LOGI(TAG, "收到控制指令 时间戳=%u, 音频流标志=%u", (unsigned)pkt->timestamp, (unsigned)pkt->audio_stream_flag);
+
+    // 更新PID目标速度
+    app_pid_set_speed(MOTOR_A, pkt->left_target_speed);
+    app_pid_set_speed(MOTOR_B, pkt->right_target_speed);
+
+    // 更新PID参数
+    app_pid_set_params(MOTOR_A, pkt->left_kp, pkt->left_ki, pkt->left_kd);
+    app_pid_set_params(MOTOR_B, pkt->right_kp, pkt->right_ki, pkt->right_kd);
+
+    ESP_LOGD(TAG, "更新电机控制: 左目标=%.2f, 右目标=%.2f, 左PID[%.2f,%.2f,%.2f], 右PID[%.2f,%.2f,%.2f]",
+             pkt->left_target_speed, pkt->right_target_speed,
+             pkt->left_kp, pkt->left_ki, pkt->left_kd,
+             pkt->right_kp, pkt->right_ki, pkt->right_kd);
 }
 
 /**
@@ -215,8 +229,31 @@ static void brain_execute_command(const uart_downlink_packet_t *pkt)
 static void brain_send_uplink(void)
 {
     uart_uplink_packet_t pkt;
+    memset(&pkt, 0, sizeof(pkt)); // 清空数据包
+
     pkt.start_flag = SEND_PACKET_START_FLAG;
     pkt.chat_gpt_count = s_chat_gpt_count;
+
+    // 获取电机PID状态
+    const pid_ctrl_block_t *pid_a = app_pid_get_status(MOTOR_A);
+    const pid_ctrl_block_t *pid_b = app_pid_get_status(MOTOR_B);
+
+    if (pid_a != NULL)
+    {
+        pkt.left_actual_speed = pid_a->state.actual_speed;
+        pkt.left_kp = pid_a->params.kp;
+        pkt.left_ki = pid_a->params.ki;
+        pkt.left_kd = pid_a->params.kd;
+    }
+
+    if (pid_b != NULL)
+    {
+        pkt.right_actual_speed = pid_b->state.actual_speed;
+        pkt.right_kp = pid_b->params.kp;
+        pkt.right_ki = pid_b->params.ki;
+        pkt.right_kd = pid_b->params.kd;
+    }
+
     pkt.timestamp = (uint32_t)(esp_timer_get_time() / 1000ULL);
     pkt.end_flag = SEND_PACKET_END_FLAG;
     uart_write_bytes(BRAIN_UART_NUM, (const char *)&pkt, sizeof(pkt));
