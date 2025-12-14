@@ -24,10 +24,8 @@
 typedef struct
 {
     uint8_t start_flag; ///< 起始标志 0xAA
-    uint8_t length;     ///< 数据包长度
 
-    // TODO: 定义上行数据包的字段
-    bool chat_gpt_enable; ///< 是否启用ChatGPT
+    uint16_t chat_gpt_count; ///< 用户触发CHAT_GPT的次数统计
 
     uint32_t timestamp; ///< 时间戳 (ms)
     uint8_t end_flag;   ///< 结束标志 0x55
@@ -40,9 +38,8 @@ typedef struct
 typedef struct
 {
     uint8_t start_flag; ///< 起始标志 0xAA
-    uint8_t length;     ///< 数据包长度
 
-    // TODO: 解析下行数据包的字段
+    uint8_t audio_stream_flag; ///< 音频流标志位，0表示未触发，1表示语音识别结束，2表示TTS合成结束，3表示端侧HTTPS下发完成，4表示端侧HTTPS接收完成
 
     uint32_t timestamp; ///< 时间戳 (ms)
     uint8_t end_flag;   ///< 结束标志 0x66

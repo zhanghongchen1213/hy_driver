@@ -13,6 +13,7 @@
  */
 
 #include "app_audio.h"
+#include "app_uart_control/app_uart_control.h"
 
 static const char *TAG = "APP_AUDIO";
 TaskHandle_t audio_player_task_handle;
@@ -255,13 +256,18 @@ static void https_stream_task(void *pvParameters)
     ESP_LOGI(TAG, "Wi-Fi 已连接，准备连接服务器: %s", SERVER_URL);
 
     // 配置 HTTP 客户端
+    // 优化长连接配置：
+    // 1. 增大 buffer_size 以应对网络抖动和大数据块
+    // 2. 增加 timeout_ms 防止因服务器短暂静默导致的连接断开
+    // 3. 显式启用 keep_alive
     esp_http_client_config_t config = {
         .url = SERVER_URL,
         .event_handler = _http_event_handler,
-        .buffer_size = 1024 * 4,   // HTTP 接收缓冲区大小
-        .timeout_ms = 5000,        // 超时时间
-        .keep_alive_enable = true, // 开启长连接
-        // 如果是 HTTPS 且有证书，需在此配置 .cert_pem
+        .buffer_size = 1024 * 16,  // 增大到 16KB，提高吞吐量稳定性
+        .timeout_ms = 40000,       // 设置较长超时，允许 LLM 思考
+        .keep_alive_enable = true, // 开启 TCP Keep-Alive
+        .is_async = true,          // [关键修改] 开启异步模式，允许非阻塞读取
+        // .disable_auto_redirect = true, // 如果不需要重定向可开启
     };
 
     while (1)
@@ -275,6 +281,7 @@ static void https_stream_task(void *pvParameters)
             continue;
         }
 
+    retry_connect:
         // 打开连接
         esp_err_t err = esp_http_client_open(client, 0);
         if (err == ESP_OK)
@@ -299,20 +306,67 @@ static void https_stream_task(void *pvParameters)
             }
 
             // 获取 HTTP 响应头长度
-            int content_length = esp_http_client_fetch_headers(client);
-            ESP_LOGI(TAG, "Content-Length: %d", content_length);
+            // 注意：对于流式传输 (Chunked)，Content-Length 通常为 -1 (未知)
+            int content_length = -1;
+            int64_t connect_start_time = esp_timer_get_time();
 
-            // 分配临时接收缓冲区
-            char *buffer = malloc(1024);
+            // 在异步模式下，循环等待 Headers
+            while (1)
+            {
+                content_length = esp_http_client_fetch_headers(client);
+                if (content_length >= 0)
+                {
+                    break; // 成功获取 Headers
+                }
+
+                if (content_length == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                {
+                    // 检查连接超时 (30秒)
+                    if (esp_timer_get_time() - connect_start_time > 30000000)
+                    {
+                        ESP_LOGE(TAG, "等待 Headers 超时");
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    continue;
+                }
+
+                ESP_LOGE(TAG, "获取 Headers 失败");
+                break;
+            }
+
+            if (content_length < 0)
+            {
+                // Headers 获取失败，断开重连
+                goto retry_connect;
+            }
+
+            ESP_LOGI(TAG, "HTTP 响应状态码: %d, Content-Length: %d",
+                     esp_http_client_get_status_code(client), content_length);
+
+            if (content_length == 0)
+            {
+                ESP_LOGW(TAG, "警告: Content-Length 为 0，服务器可能未发送数据或连接已结束");
+            }
+
+            // 分配更大的临时接收缓冲区 (4KB) 以提高读取效率
+            int recv_buf_size = 4096;
+            char *buffer = malloc(recv_buf_size);
             if (buffer)
             {
+                int64_t last_data_time = esp_timer_get_time();
+                bool has_received_data = false;
+
                 while (1)
                 {
-                    // 3. 从网络读取数据
-                    int read_len = esp_http_client_read(client, buffer, 1024);
+                    // 3. 从网络读取数据 (非阻塞)
+                    int read_len = esp_http_client_read(client, buffer, recv_buf_size);
 
                     if (read_len > 0)
                     {
+                        has_received_data = true;
+                        last_data_time = esp_timer_get_time();
+
                         // 4. 将数据写入 RingBuffer
                         // VFS 驱动的 pipe_read 会从另一端读取这些数据
                         // 如果 RingBuffer 满了，这里会阻塞等待 (pdMS_TO_TICKS(1000))
@@ -323,27 +377,51 @@ static void https_stream_task(void *pvParameters)
                     }
                     else if (read_len == 0)
                     {
-                        // 如果不是完整结束，可能是临时无数据，或者是服务器保持连接但暂无数据
-                        // 对于 chunked 传输，read_len=0 且非错误可能意味着流结束，也可能只是本轮没数据
-                        // 检查 errno
+                        // 0 表示连接被对方关闭 (EOF)
+                        if (esp_http_client_is_complete_data_received(client))
+                        {
+                            ESP_LOGI(TAG, "服务器流传输正常结束 (EOF)");
+                            extern uint8_t s_audio_stream_flag;
+                            s_audio_stream_flag = 4;
+                        }
+                        else
+                        {
+                            ESP_LOGW(TAG, "连接被意外关闭");
+                        }
+                        break;
+                    }
+                    else
+                    {
+                        // read_len < 0，检查是否为 EAGAIN
                         if (errno == EAGAIN || errno == EWOULDBLOCK)
                         {
-                            // 暂时无数据，继续等待
+                            int64_t now = esp_timer_get_time();
+                            int64_t elapsed_us = now - last_data_time;
+
+                            // 双重超时逻辑：
+                            // 1. 如果还未收到任何数据 (LLM 思考中)，允许等待 30秒
+                            // 2. 如果已开始接收数据 (正在播放)，静默超过 2秒 则认为流结束
+                            int64_t timeout_us = has_received_data ? 2000000 : 30000000; // 2s vs 30s
+
+                            if (elapsed_us > timeout_us)
+                            {
+                                if (has_received_data)
+                                {
+                                    ESP_LOGI(TAG, "语音流自然结束 (静默 > 2s)");
+                                }
+                                else
+                                {
+                                    ESP_LOGE(TAG, "LLM 响应超时 (> 30s)");
+                                }
+                                break;
+                            }
+
+                            // 暂时无数据，稍后重试
                             vTaskDelay(pdMS_TO_TICKS(10));
                             continue;
                         }
 
-                        // read_len 为 0 可能表示流结束，也可能是超时
-                        if (esp_http_client_is_complete_data_received(client))
-                        {
-                            ESP_LOGI(TAG, "服务器流传输结束");
-                            break;
-                        }
-                        // 如果不是完整结束，可能是临时无数据，继续循环
-                    }
-                    else
-                    {
-                        ESP_LOGE(TAG, "HTTP 读取错误");
+                        ESP_LOGE(TAG, "HTTP 读取错误: errno=%d", errno);
                         break;
                     }
                 }

@@ -2,8 +2,8 @@
 
 static const char *TAG = "APP_UART";
 
-static bool s_chat_gpt_enable = false;
-static uint32_t s_chat_gpt_expire_ms = 0;
+static uint16_t s_chat_gpt_count = 0;
+uint8_t s_audio_stream_flag = 0;
 
 static QueueHandle_t s_ci03t_uart_queue = NULL;
 static QueueHandle_t s_brain_uart_queue = NULL;
@@ -16,20 +16,7 @@ static void BRAIN_UART_TX_task(void *pvParameters);
 static void brain_parse_downlink(const uint8_t *buf, int len);
 static void brain_execute_command(const uart_downlink_packet_t *pkt);
 static void brain_send_uplink(void);
-static void chat_gpt_timeout_check(void);
-static inline void chat_gpt_set(bool enable)
-{
-    if (enable)
-    {
-        s_chat_gpt_enable = true;
-        s_chat_gpt_expire_ms = (uint32_t)(esp_timer_get_time() / 1000ULL) + 10000U;
-    }
-    else
-    {
-        s_chat_gpt_enable = false;
-        s_chat_gpt_expire_ms = 0;
-    }
-}
+
 void rtos_uart_init(void)
 {
     BaseType_t result = pdPASS;
@@ -89,7 +76,16 @@ static void CI03T_UART_MONITOR_task(void *pvParameters)
                             ESP_LOGI(TAG, "收到指令: 唤醒 (0x%02X)", byte);
                             break;
                         case CHAT_GPT:
-                            ESP_LOGI(TAG, "收到指令: 交互 (0x%02X)", byte);
+                            // 保证在播报过程中，音频流不会被打断
+                            if (s_audio_stream_flag == 0 || s_audio_stream_flag == 4)
+                            {
+                                s_chat_gpt_count++;
+                                ESP_LOGI(TAG, "收到指令: 交互 (0x%02X), 累计次数: %u", byte, s_chat_gpt_count);
+                            }
+                            else
+                            {
+                                ESP_LOGI(TAG, "收到指令: 交互 (0x%02X), 但音频流标志为 %d, 忽略计数", byte, s_audio_stream_flag);
+                            }
                             break;
                         case WAKE_EXIT:
                             ESP_LOGI(TAG, "收到指令: 退出唤醒 (0x%02X)", byte);
@@ -98,7 +94,6 @@ static void CI03T_UART_MONITOR_task(void *pvParameters)
                             ESP_LOGW(TAG, "未知指令: 0x%02X", byte);
                             break;
                         }
-                        chat_gpt_set(cmd == CHAT_GPT);
                     }
                     rx--;
                 }
@@ -161,20 +156,8 @@ static void BRAIN_UART_TX_task(void *pvParameters)
 {
     for (;;)
     {
-        chat_gpt_timeout_check();
         brain_send_uplink();
         vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-static void chat_gpt_timeout_check(void)
-{
-    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-    if (s_chat_gpt_enable && s_chat_gpt_expire_ms != 0 && now_ms >= s_chat_gpt_expire_ms)
-    {
-        s_chat_gpt_enable = false;
-        s_chat_gpt_expire_ms = 0;
-        ESP_LOGI(TAG, "交互超时, 自动关闭chat_gpt_enable");
     }
 }
 
@@ -183,10 +166,9 @@ static void chat_gpt_timeout_check(void)
  *
  * 本函数从接收缓冲区中逐字节扫描，查找合法的数据包：
  * 1. 以 RECEIVE_PACKET_START_FLAG 开头；
- * 2. 第 2 字节为总长度 L，且 L ≥ 7（最小合法长度）；
+ * 2. 剩余长度足够（sizeof(uart_downlink_packet_t)）；
  * 3. 包尾字节为 RECEIVE_PACKET_END_FLAG；
- * 4. 长度足够，避免越界。
- * 找到合法包后，提取时间戳并调用 brain_execute_command() 执行对应指令。
+ * 找到合法包后，提取字段并调用 brain_execute_command() 执行对应指令。
  *
  * @param buf 串口接收到的原始数据缓冲区
  * @param len 缓冲区有效长度
@@ -199,36 +181,22 @@ static void brain_parse_downlink(const uint8_t *buf, int len)
         /* 检测到包头标志 */
         if (buf[i] == RECEIVE_PACKET_START_FLAG)
         {
-            uint8_t L = buf[i + 1]; // 第 2 字节为数据包总长度
-            /* 长度字段必须 ≥ 7，否则视为非法包 */
-            if (L >= 7)
+            /* 检查剩余长度是否足够一个完整包 */
+            if (len - i >= sizeof(uart_downlink_packet_t))
             {
-                int remain = len - i; // 剩余未处理字节数
-
-                /* 缓冲区剩余字节数 ≥ 声明的总长度 L，才继续解析 */
-                if (remain >= L)
+                /* 检查包尾标志是否匹配 */
+                if (buf[i + sizeof(uart_downlink_packet_t) - 1] == RECEIVE_PACKET_END_FLAG)
                 {
-                    /* 检查包尾标志是否匹配 */
-                    if (buf[i + L - 1] == RECEIVE_PACKET_END_FLAG)
-                    {
-                        uart_downlink_packet_t pkt;
+                    uart_downlink_packet_t *pkt = (uart_downlink_packet_t *)(buf + i);
 
-                        /* 填充包头、长度、包尾 */
-                        pkt.start_flag = buf[i];
-                        pkt.length = L;
-                        pkt.end_flag = buf[i + L - 1];
+                    /* 提取 audio_stream_flag (位于包头后第 1 字节) */
+                    // 由于结构体是 packed 的，可以直接访问
 
-                        /* 提取 4 字节时间戳（位于包头后第 2~5 字节） */
-                        uint32_t ts = 0;
-                        memcpy(&ts, buf + i + 2, sizeof(uint32_t));
-                        pkt.timestamp = ts;
+                    /* 执行对应指令 */
+                    brain_execute_command(pkt);
 
-                        /* 执行对应指令 */
-                        brain_execute_command(&pkt);
-
-                        /* 跳过本包剩余字节，直接到包尾后一位 */
-                        i += L - 1;
-                    }
+                    /* 跳过本包长度，继续扫描后续数据 */
+                    i += sizeof(uart_downlink_packet_t) - 1;
                 }
             }
         }
@@ -237,7 +205,8 @@ static void brain_parse_downlink(const uint8_t *buf, int len)
 
 static void brain_execute_command(const uart_downlink_packet_t *pkt)
 {
-    ESP_LOGI(TAG, "收到控制指令 时间戳=%u", (unsigned)pkt->timestamp);
+    s_audio_stream_flag = pkt->audio_stream_flag;
+    ESP_LOGI(TAG, "收到控制指令 时间戳=%u, 音频流标志=%u", (unsigned)pkt->timestamp, (unsigned)pkt->audio_stream_flag);
 }
 
 /**
@@ -247,9 +216,19 @@ static void brain_send_uplink(void)
 {
     uart_uplink_packet_t pkt;
     pkt.start_flag = SEND_PACKET_START_FLAG;
-    pkt.length = sizeof(uart_uplink_packet_t);
-    pkt.chat_gpt_enable = s_chat_gpt_enable;
+    pkt.chat_gpt_count = s_chat_gpt_count;
     pkt.timestamp = (uint32_t)(esp_timer_get_time() / 1000ULL);
     pkt.end_flag = SEND_PACKET_END_FLAG;
     uart_write_bytes(BRAIN_UART_NUM, (const char *)&pkt, sizeof(pkt));
+}
+
+/**
+ * @brief 设置 ChatGPT 启用状态
+ * 供外部模块（如音频播放）调用
+ * @param enable true=启用, false=禁用
+ */
+void app_uart_set_chat_gpt_enable(bool enable)
+{
+    // chat_gpt_set(enable);
+    // ESP_LOGI(TAG, "外部设置 chat_gpt_enable = %d", enable);
 }
