@@ -7,6 +7,7 @@ static void system_nvs_flash_restart(void);
 static void hardware_studio_init(void);
 static esp_err_t bsp_spiffs_mount(void);
 static void hardware_init(void);
+static void motor_test(void *pvParameters);
 
 void app_main(void)
 {
@@ -29,6 +30,21 @@ void app_main(void)
 #if BLUE_CONTROL
     rtos_blue_control_init(); // 蓝牙控制任务初始化
 #endif
+    xTaskCreatePinnedToCore(motor_test, "motor_test_task", 3 * 1024, NULL, 3, NULL, 1);
+}
+
+static void motor_test(void *pvParameters)
+{
+    motor_enable();
+    ESP_LOGI("MOTOR_TEST", "电机测试任务启动");
+
+    while (1)
+    {
+        float rpm_a, rpm_b;
+        motor_get_rpm(MOTOR_A, &rpm_a);
+        motor_get_rpm(MOTOR_B, &rpm_b);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
 
 static void hardware_studio_init(void)
@@ -44,7 +60,7 @@ static void hardware_init(void)
     // 串口通信启动
     uart_comm_init_all();
     // 舵机启动
-    servo_init();
+    // servo_init();
     // 电机及编码器初始化
     motor_init();
 }

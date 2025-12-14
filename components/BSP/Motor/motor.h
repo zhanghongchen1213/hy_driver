@@ -31,10 +31,8 @@
 
 // 编码器参数定义 - N20电机官方参数
 #define ENCODER_PPR 7              ///< 编码器每转脉冲数（基础脉冲，7PPR）
-#define ENCODER_POLES 14           ///< 磁环触发极数（14极，7对极）
-#define ENCODER_GEAR_RATIO 380.0f  ///< 减速比（1:380）
 #define ENCODER_OUTPUT_PPR 2654.1f ///< 减速后输出轴编码线数（官方标准：2654.1线/转）
-#define ENCODER_SAMPLE_TIME_MS 10  ///< 转速采样时间间隔（毫秒）
+#define ENCODER_SAMPLE_TIME_MS 2   ///< 编码器采样时间间隔（毫秒）
 
 // PCNT计数器限制值定义
 #define PCNT_UNIT_MAX_COUNT 32767  ///< PCNT单元最大计数值
@@ -119,122 +117,47 @@ typedef struct
 // 车体运动状态结构体
 typedef struct
 {
-    float motor_a_rpm;          ///< 电机A转速（转/分钟）
-    float motor_b_rpm;          ///< 电机B转速（转/分钟）
-    float motor_a_position_deg; ///< 电机A位置角度（度）
-    float motor_b_position_deg; ///< 电机B位置角度（度）
-    float travel_distance_mm;   ///< 累积行驶距离（毫米）
-    float vehicle_angle_deg;    ///< 车体转角（度，正值为逆时针）
-    uint32_t timestamp_ms;      ///< 数据时间戳（毫秒）
-    bool data_valid;            ///< 数据有效性标志
+    float motor_a_rpm;     ///< 电机A输出轴实际转速（转/分钟）
+    float motor_b_rpm;     ///< 电机B输出轴实际转速（转/分钟）
+    uint32_t timestamp_ms; ///< 数据时间戳（毫秒）
+    bool data_valid;       ///< 数据有效性标志
 } vehicle_motion_state_t;
 
 /**
  * @brief 双电机系统初始化
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
  */
 esp_err_t motor_init(void);
-
-/**
- * @brief 激活双电机使能状态
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- */
-esp_err_t motor_enable(void);
 
 /**
  * @brief 控制双电机停止
  * @param motor_a_stop_mode 电机A停止方式
  * @param motor_b_stop_mode 电机B停止方式
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
  */
 esp_err_t motor_stop(motor_stop_mode_t motor_a_stop_mode, motor_stop_mode_t motor_b_stop_mode);
 
 /**
- * @brief 解除双电机使能状态
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
+ * @brief 激活双电机使能状态
+ */
+esp_err_t motor_enable(void);
+
+/**
+ * @brief 解除双电机使能状态，急停功能
  */
 esp_err_t motor_disable(void);
 
 /**
- * @brief 设置指定电机转速
+ * @brief 设置指定电机转速和方向
  * @param motor_id 目标电机标识
- * @param speed 设定的转速值（0-10000，对应0%-100%占空比）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- */
-esp_err_t motor_set_speed(motor_id_t motor_id, uint32_t speed);
-
-/**
- * @brief 控制指定电机运动方向
- * @param motor_id 目标电机标识
+ * @param speed 设定的转速值（0-100，对应0%-100%占空比）
  * @param direction 运动方向（前进/后退）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
  */
-esp_err_t motor_set_direction(motor_id_t motor_id, motor_direction_t direction);
+esp_err_t motor_set_speed_and_dir(motor_id_t motor_id, uint32_t speed, motor_direction_t direction);
 
 /**
- * @brief 编码器初始化
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- */
-esp_err_t encode_init(void);
-
-/**
- * @brief 获取指定电机的转速
+ * @brief 获取电机的实际转速
  * @param motor_id 目标电机标识（MOTOR_A或MOTOR_B）
  * @param rpm 输出转速值（转/分钟）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
  */
 esp_err_t motor_get_rpm(motor_id_t motor_id, float *rpm);
-
-/**
- * @brief 获取指定电机的位置角度
- * @param motor_id 目标电机标识（MOTOR_A或MOTOR_B）
- * @param position 输出位置角度值（度）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- */
-esp_err_t motor_get_position(motor_id_t motor_id, float *position);
-
-/**
- * @brief 获取车体累积行驶距离
- * @param distance 输出累积行驶距离（毫米）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- * @note 基于双轮编码器数据计算的累积行驶距离
- */
-esp_err_t motor_get_travel_distance(float *distance);
-
-/**
- * @brief 获取车体转角
- * @param angle 输出车体转角（度）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- * @note 基于差分驱动模型计算的车体转角，正值为逆时针转向
- */
-esp_err_t motor_get_vehicle_angle(float *angle);
-
-/**
- * @brief 重置里程计数据
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- * @note 清零累积行驶距离和车体转角数据
- */
-esp_err_t motor_reset_odometry(void);
-
-/**
- * @brief 获取完整的车体运动状态
- * @param[out] motion_state 车体运动状态结构体指针
- * @retval ESP_OK 成功
- * @retval ESP_ERR_INVALID_ARG 参数无效
- * @retval ESP_ERR_INVALID_STATE 编码器未初始化
- */
-esp_err_t motor_get_motion_state(vehicle_motion_state_t *motion_state);
 
 #endif

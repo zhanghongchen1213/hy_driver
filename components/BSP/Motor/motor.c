@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "motor.h"
 
 static const char *TAG = "motor";
@@ -38,17 +39,12 @@ static dual_motor_t g_dual_motor = {
     .encoder_b = {.pcnt_unit = NULL, .pulse_count = 0, .speed_rpm = 0.0f, .mode = ENCODER_MODE_X4, .is_initialized = false},
     .is_initialized = false};
 
-// 里程计相关全局变量
-static float g_total_distance_mm = 0.0f;   ///< 累积行驶距离（毫米）
-static float g_vehicle_angle_deg = 0.0f;   ///< 车体转角（度）
-static int32_t g_last_encoder_a_count = 0; ///< 上次电机A编码器计数
-static int32_t g_last_encoder_b_count = 0; ///< 上次电机B编码器计数
 static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor);
 static bool IRAM_ATTR encoder_overflow_callback(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx);
 static esp_err_t encoder_get_count(encoder_t *encoder, int32_t *count);
 static esp_err_t encoder_clear_count(encoder_t *encoder);
 static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int phase_b_pin, int unit_id);
-
+static esp_err_t encode_init(void);
 //*=========== 内部函数 ==============*//
 static bool IRAM_ATTR encoder_overflow_callback(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx)
 {
@@ -324,19 +320,37 @@ static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int ph
  */
 /**
  * @brief TB6612FNG电机驱动器初始化
+ *
+ * 本函数负责初始化控制TB6612FNG驱动芯片所需的所有硬件资源，包括GPIO和MCPWM外设。
+ * 初始化流程如下：
+ * 1. 配置方向控制GPIO：AIN1/AIN2, BIN1/BIN2
+ * 2. 配置PWM控制资源（使用MCPWM外设）：
+ *    - 创建定时器 (Timer)：提供1kHz的PWM基准频率
+ *    - 创建操作器 (Operator)：连接定时器与比较器/生成器
+ *    - 创建比较器 (Comparator)：用于生成PWM占空比
+ *    - 创建生成器 (Generator)：将比较结果输出到PWM引脚 (PWMA/PWMB)
+ * 3. 配置PWM波形生成策略
+ * 4. 启动PWM定时器
+ *
+ * @param motor 指向TB6612FNG电机结构体的指针
+ * @return esp_err_t 初始化结果 (ESP_OK: 成功, 其他: 失败)
  */
 static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
 {
     esp_err_t ret;
 
-    // 配置GPIO引脚
+    // =========================================================================
+    // 1. GPIO 初始化 (方向控制引脚)
+    // =========================================================================
+
+    // 配置GPIO引脚参数
     gpio_config_t io_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_OUTPUT,
+        .intr_type = GPIO_INTR_DISABLE, // 禁用中断
+        .mode = GPIO_MODE_OUTPUT,       // 设置为输出模式
         .pin_bit_mask = (1ULL << motor->ain1_pin) | (1ULL << motor->ain2_pin) |
-                        (1ULL << motor->bin1_pin) | (1ULL << motor->bin2_pin),
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
+                        (1ULL << motor->bin1_pin) | (1ULL << motor->bin2_pin), // 选中所有方向引脚
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,                                 // 禁用内部下拉
+        .pull_up_en = GPIO_PULLUP_DISABLE,                                     // 禁用内部上拉
     };
     ret = gpio_config(&io_conf);
     if (ret != ESP_OK)
@@ -345,19 +359,24 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
-    // 初始化方向控制引脚为低电平
+    // 初始化所有方向引脚为低电平 (电机停止状态)
     gpio_set_level(motor->ain1_pin, 0);
     gpio_set_level(motor->ain2_pin, 0);
     gpio_set_level(motor->bin1_pin, 0);
     gpio_set_level(motor->bin2_pin, 0);
 
-    // 配置MCPWM定时器
+    // =========================================================================
+    // 2. MCPWM 定时器配置 (PWM时基)
+    // =========================================================================
+
+    // 配置MCPWM定时器参数
     mcpwm_timer_config_t timer_config = {
-        .group_id = 0,
-        .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT,
-        .resolution_hz = 1000000, // 1MHz, 1 tick = 1us
-        .period_ticks = 1000,     // 1000us = 1kHz PWM频率
-        .count_mode = MCPWM_TIMER_COUNT_MODE_UP,
+        .group_id = 0,                           // 使用MCPWM组0
+        .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT,  // 使用默认时钟源 (通常是APB时钟)
+        .resolution_hz = 1000000,                // 计数器分辨率: 1MHz (1 tick = 1us)
+        .period_ticks = 1000,                    // 周期tick数: 1000 (PWM周期 = 1000us = 1ms)
+                                                 // PWM频率 = 1MHz / 1000 = 1kHz
+        .count_mode = MCPWM_TIMER_COUNT_MODE_UP, // 向上计数模式 (0 -> 1000 -> 0)
     };
     ret = mcpwm_new_timer(&timer_config, &motor->timer_handle);
     if (ret != ESP_OK)
@@ -366,19 +385,23 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
-    // 配置MCPWM操作器
+    // =========================================================================
+    // 3. MCPWM 操作器配置 (Operator)
+    // =========================================================================
+
+    // 配置MCPWM操作器参数
     mcpwm_operator_config_t operator_config = {
-        .group_id = 0,
+        .group_id = 0, // 必须与定时器在同一组
     };
     ret = mcpwm_new_operator(&operator_config, &motor->operator_handle);
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "MCPWM操作器创建失败: %s", esp_err_to_name(ret));
-        mcpwm_del_timer(motor->timer_handle);
+        mcpwm_del_timer(motor->timer_handle); // 回滚：删除已创建的定时器
         return ret;
     }
 
-    // 连接定时器和操作器
+    // 将定时器连接到操作器
     ret = mcpwm_operator_connect_timer(motor->operator_handle, motor->timer_handle);
     if (ret != ESP_OK)
     {
@@ -388,10 +411,16 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
-    // 配置比较器A
+    // =========================================================================
+    // 4. MCPWM 比较器配置 (Comparator) - 用于占空比控制
+    // =========================================================================
+
+    // 配置比较器参数
     mcpwm_comparator_config_t comparator_config = {
-        .flags.update_cmp_on_tez = true,
+        .flags.update_cmp_on_tez = true, // 在计数器归零(TEZ)时更新比较值，防止波形毛刺
     };
+
+    // 创建比较器A (控制电机A速度)
     ret = mcpwm_new_comparator(motor->operator_handle, &comparator_config, &motor->cmpr_a_handle);
     if (ret != ESP_OK)
     {
@@ -401,7 +430,7 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
-    // 配置比较器B
+    // 创建比较器B (控制电机B速度)
     ret = mcpwm_new_comparator(motor->operator_handle, &comparator_config, &motor->cmpr_b_handle);
     if (ret != ESP_OK)
     {
@@ -412,7 +441,11 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
-    // 配置生成器A
+    // =========================================================================
+    // 5. MCPWM 生成器配置 (Generator) - 用于PWM波形输出
+    // =========================================================================
+
+    // 配置生成器A (输出到 PWMA 引脚)
     mcpwm_generator_config_t generator_config = {
         .gen_gpio_num = motor->pwma_pin,
     };
@@ -427,7 +460,7 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
-    // 配置生成器B
+    // 配置生成器B (输出到 PWMB 引脚)
     generator_config.gen_gpio_num = motor->pwmb_pin;
     ret = mcpwm_new_generator(motor->operator_handle, &generator_config, &motor->gen_b_handle);
     if (ret != ESP_OK)
@@ -441,7 +474,15 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
-    // 设置生成器A的PWM波形
+    // =========================================================================
+    // 6. 配置 PWM 波形生成动作
+    // =========================================================================
+    // 策略：高电平有效
+    // - 计数器值 < 比较值：输出高电平
+    // - 计数器值 > 比较值：输出低电平
+
+    // 设置生成器A动作：
+    // 1. 计数器归零 (Timer Empty) -> 输出高电平
     ret = mcpwm_generator_set_action_on_timer_event(motor->gen_a_handle,
                                                     MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH));
     if (ret != ESP_OK)
@@ -449,6 +490,7 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         ESP_LOGE(TAG, "设置生成器A定时器事件失败: %s", esp_err_to_name(ret));
         return ret;
     }
+    // 2. 计数器值等于比较值 (Compare Match) -> 输出低电平
     ret = mcpwm_generator_set_action_on_compare_event(motor->gen_a_handle,
                                                       MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, motor->cmpr_a_handle, MCPWM_GEN_ACTION_LOW));
     if (ret != ESP_OK)
@@ -457,7 +499,7 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
-    // 设置生成器B的PWM波形
+    // 设置生成器B动作 (同上)
     ret = mcpwm_generator_set_action_on_timer_event(motor->gen_b_handle,
                                                     MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH));
     if (ret != ESP_OK)
@@ -473,7 +515,11 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
-    // 启动定时器
+    // =========================================================================
+    // 7. 启动 PWM 输出
+    // =========================================================================
+
+    // 使能定时器
     ret = mcpwm_timer_enable(motor->timer_handle);
     if (ret != ESP_OK)
     {
@@ -481,6 +527,7 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
         return ret;
     }
 
+    // 启动定时器运行 (不停止)
     ret = mcpwm_timer_start_stop(motor->timer_handle, MCPWM_TIMER_START_NO_STOP);
     if (ret != ESP_OK)
     {
@@ -489,6 +536,82 @@ static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor)
     }
 
     motor->is_initialized = true;
+    return ESP_OK;
+}
+
+/**
+ * @brief 激活双电机使能状态
+ * @retval ESP_OK 成功
+ * @retval ESP_FAIL 失败
+ */
+esp_err_t motor_enable(void)
+{
+    if (!g_dual_motor.is_initialized)
+    {
+        ESP_LOGE(TAG, "电机系统未初始化");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "正在使能双电机系统...");
+
+    g_dual_motor.tb6612fng.motor_a_enabled = true;
+    g_dual_motor.tb6612fng.motor_b_enabled = true;
+
+    ESP_LOGI(TAG, "双电机系统使能成功");
+    return ESP_OK;
+}
+
+/**
+ * @brief 编码器初始化
+ * @retval ESP_OK 成功
+ * @retval ESP_FAIL 失败
+ */
+static esp_err_t encode_init(void)
+{
+    ESP_LOGI(TAG, "正在初始化编码器系统...");
+
+    if (g_dual_motor.encoder_a.is_initialized && g_dual_motor.encoder_b.is_initialized)
+    {
+        ESP_LOGW(TAG, "编码器系统已经初始化完成");
+        return ESP_OK;
+    }
+
+    esp_err_t ret;
+
+    // 初始化电机A编码器
+    ret = encoder_init_single(&g_dual_motor.encoder_a, ENCODER_A_PHASE_A_PIN, ENCODER_A_PHASE_B_PIN, 0);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "电机A编码器初始化失败");
+        // 清理电机A编码器资源
+        if (g_dual_motor.encoder_a.is_initialized)
+        {
+            pcnt_unit_stop(g_dual_motor.encoder_a.pcnt_unit);
+            pcnt_unit_disable(g_dual_motor.encoder_a.pcnt_unit);
+            pcnt_del_unit(g_dual_motor.encoder_a.pcnt_unit);
+            g_dual_motor.encoder_a.is_initialized = false;
+        }
+        return ret;
+    }
+
+    // 初始化电机B编码器
+    // 注意：此处交换A/B相引脚顺序，修正计数方向
+    ret = encoder_init_single(&g_dual_motor.encoder_b, ENCODER_B_PHASE_B_PIN, ENCODER_B_PHASE_A_PIN, 1);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "电机B编码器初始化失败");
+        // 清理电机B编码器资源
+        if (g_dual_motor.encoder_b.is_initialized)
+        {
+            pcnt_unit_stop(g_dual_motor.encoder_b.pcnt_unit);
+            pcnt_unit_disable(g_dual_motor.encoder_b.pcnt_unit);
+            pcnt_del_unit(g_dual_motor.encoder_b.pcnt_unit);
+            g_dual_motor.encoder_b.is_initialized = false;
+        }
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "编码器系统初始化完成");
     return ESP_OK;
 }
 
@@ -516,29 +639,8 @@ esp_err_t motor_init(void)
     g_dual_motor.is_initialized = true;
     ESP_LOGI(TAG, "双电机系统初始化完成");
 
+    // 初始化双电机编码器
     encode_init();
-    return ESP_OK;
-}
-
-/**
- * @brief 激活双电机使能状态
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- */
-esp_err_t motor_enable(void)
-{
-    if (!g_dual_motor.is_initialized)
-    {
-        ESP_LOGE(TAG, "电机系统未初始化");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    ESP_LOGI(TAG, "正在使能双电机系统...");
-
-    g_dual_motor.tb6612fng.motor_a_enabled = true;
-    g_dual_motor.tb6612fng.motor_b_enabled = true;
-
-    ESP_LOGI(TAG, "双电机系统使能成功");
     return ESP_OK;
 }
 
@@ -633,13 +735,14 @@ esp_err_t motor_disable(void)
 }
 
 /**
- * @brief 设置指定电机转速
+ * @brief 设置指定电机转速和方向
  * @param motor_id 目标电机标识
  * @param speed 设定的转速值（0-100，对应0%-100%占空比）
+ * @param direction 运动方向（前进/后退）
  * @retval ESP_OK 成功
  * @retval ESP_FAIL 失败
  */
-esp_err_t motor_set_speed(motor_id_t motor_id, uint32_t speed)
+esp_err_t motor_set_speed_and_dir(motor_id_t motor_id, uint32_t speed, motor_direction_t direction)
 {
     if (!g_dual_motor.is_initialized)
     {
@@ -658,96 +761,11 @@ esp_err_t motor_set_speed(motor_id_t motor_id, uint32_t speed)
     uint32_t compare_value = (speed * 1000) / 100;
     esp_err_t ret = ESP_OK;
 
-    switch (motor_id)
-    {
-    case MOTOR_A:
-        if (!g_dual_motor.tb6612fng.motor_a_enabled)
-        {
-            ESP_LOGE(TAG, "电机A未使能");
-            return ESP_ERR_INVALID_STATE;
-        }
-        // 设置MCPWM比较器值
-        ret = mcpwm_comparator_set_compare_value(g_dual_motor.tb6612fng.cmpr_a_handle, compare_value);
-        if (ret == ESP_OK)
-        {
-            ESP_LOGD(TAG, "电机A速度设置为 %lu%% (PWM: %lu)", speed, compare_value);
-        }
-        else
-        {
-            ESP_LOGE(TAG, "设置电机A速度失败: %s", esp_err_to_name(ret));
-        }
-        break;
-
-    case MOTOR_B:
-        if (!g_dual_motor.tb6612fng.motor_b_enabled)
-        {
-            ESP_LOGE(TAG, "电机B未使能");
-            return ESP_ERR_INVALID_STATE;
-        }
-        // 设置MCPWM比较器值
-        ret = mcpwm_comparator_set_compare_value(g_dual_motor.tb6612fng.cmpr_b_handle, compare_value);
-        if (ret == ESP_OK)
-        {
-            ESP_LOGD(TAG, "电机B速度设置为 %lu%% (PWM: %lu)", speed, compare_value);
-        }
-        else
-        {
-            ESP_LOGE(TAG, "设置电机B速度失败: %s", esp_err_to_name(ret));
-        }
-        break;
-
-    case MOTOR_BOTH:
-        if (!g_dual_motor.tb6612fng.motor_a_enabled || !g_dual_motor.tb6612fng.motor_b_enabled)
-        {
-            ESP_LOGE(TAG, "双电机未完全使能");
-            return ESP_ERR_INVALID_STATE;
-        }
-        // 设置电机A速度
-        ret = mcpwm_comparator_set_compare_value(g_dual_motor.tb6612fng.cmpr_a_handle, compare_value);
-        if (ret != ESP_OK)
-        {
-            ESP_LOGE(TAG, "设置电机A速度失败: %s", esp_err_to_name(ret));
-            return ret;
-        }
-
-        // 设置电机B速度
-        ret = mcpwm_comparator_set_compare_value(g_dual_motor.tb6612fng.cmpr_b_handle, compare_value);
-        if (ret != ESP_OK)
-        {
-            ESP_LOGE(TAG, "设置电机B速度失败: %s", esp_err_to_name(ret));
-            return ret;
-        }
-
-        ESP_LOGD(TAG, "双电机速度设置为 %lu%% (PWM: %lu)", speed, compare_value);
-        break;
-
-    default:
-        ESP_LOGE(TAG, "无效的电机ID: %d", motor_id);
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    return ret;
-}
-
-/**
- * @brief 控制指定电机运动方向
- * @param motor_id 目标电机标识
- * @param direction 运动方向（前进/后退）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- */
-esp_err_t motor_set_direction(motor_id_t motor_id, motor_direction_t direction)
-{
-    if (!g_dual_motor.is_initialized)
-    {
-        ESP_LOGE(TAG, "电机系统未初始化");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    ESP_LOGD(TAG, "设置电机%s方向为%s",
+    ESP_LOGD(TAG, "设置电机%s方向为%s, 速度为%lu%%",
              (motor_id == MOTOR_A) ? "A" : (motor_id == MOTOR_B) ? "B"
                                                                  : "双",
-             (direction == MOTOR_DIRECTION_FORWARD) ? "正转" : "反转");
+             (direction == MOTOR_DIRECTION_FORWARD) ? "正转" : "反转",
+             speed);
 
     switch (motor_id)
     {
@@ -757,20 +775,23 @@ esp_err_t motor_set_direction(motor_id_t motor_id, motor_direction_t direction)
             ESP_LOGE(TAG, "电机A未使能");
             return ESP_ERR_INVALID_STATE;
         }
+        // 设置方向
         if (direction == MOTOR_DIRECTION_FORWARD)
         {
-            // 正转：AIN1=1, AIN2=0
             gpio_set_level(g_dual_motor.tb6612fng.ain1_pin, 1);
             gpio_set_level(g_dual_motor.tb6612fng.ain2_pin, 0);
         }
         else
         {
-            // 反转：AIN1=0, AIN2=1
             gpio_set_level(g_dual_motor.tb6612fng.ain1_pin, 0);
             gpio_set_level(g_dual_motor.tb6612fng.ain2_pin, 1);
         }
-        ESP_LOGD(TAG, "电机A方向设置成功: %s",
-                 (direction == MOTOR_DIRECTION_FORWARD) ? "正转" : "反转");
+        // 设置速度
+        ret = mcpwm_comparator_set_compare_value(g_dual_motor.tb6612fng.cmpr_a_handle, compare_value);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "设置电机A速度失败: %s", esp_err_to_name(ret));
+        }
         break;
 
     case MOTOR_B:
@@ -779,20 +800,23 @@ esp_err_t motor_set_direction(motor_id_t motor_id, motor_direction_t direction)
             ESP_LOGE(TAG, "电机B未使能");
             return ESP_ERR_INVALID_STATE;
         }
+        // 设置方向
         if (direction == MOTOR_DIRECTION_FORWARD)
         {
-            // 正转：BIN1=0, BIN2=1
             gpio_set_level(g_dual_motor.tb6612fng.bin1_pin, 0);
             gpio_set_level(g_dual_motor.tb6612fng.bin2_pin, 1);
         }
         else
         {
-            // 反转：BIN1=1, BIN2=0
             gpio_set_level(g_dual_motor.tb6612fng.bin1_pin, 1);
             gpio_set_level(g_dual_motor.tb6612fng.bin2_pin, 0);
         }
-        ESP_LOGD(TAG, "电机B方向设置成功: %s",
-                 (direction == MOTOR_DIRECTION_FORWARD) ? "正转" : "反转");
+        // 设置速度
+        ret = mcpwm_comparator_set_compare_value(g_dual_motor.tb6612fng.cmpr_b_handle, compare_value);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "设置电机B速度失败: %s", esp_err_to_name(ret));
+        }
         break;
 
     case MOTOR_BOTH:
@@ -812,6 +836,13 @@ esp_err_t motor_set_direction(motor_id_t motor_id, motor_direction_t direction)
             gpio_set_level(g_dual_motor.tb6612fng.ain1_pin, 0);
             gpio_set_level(g_dual_motor.tb6612fng.ain2_pin, 1);
         }
+        // 设置电机A速度
+        ret = mcpwm_comparator_set_compare_value(g_dual_motor.tb6612fng.cmpr_a_handle, compare_value);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "设置电机A速度失败: %s", esp_err_to_name(ret));
+            return ret;
+        }
 
         // 设置电机B方向
         if (direction == MOTOR_DIRECTION_FORWARD)
@@ -824,8 +855,13 @@ esp_err_t motor_set_direction(motor_id_t motor_id, motor_direction_t direction)
             gpio_set_level(g_dual_motor.tb6612fng.bin1_pin, 1);
             gpio_set_level(g_dual_motor.tb6612fng.bin2_pin, 0);
         }
-
-        ESP_LOGD(TAG, "双电机方向设置为 %s", (direction == MOTOR_DIRECTION_FORWARD) ? "正转" : "反转");
+        // 设置电机B速度
+        ret = mcpwm_comparator_set_compare_value(g_dual_motor.tb6612fng.cmpr_b_handle, compare_value);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "设置电机B速度失败: %s", esp_err_to_name(ret));
+            return ret;
+        }
         break;
 
     default:
@@ -833,58 +869,13 @@ esp_err_t motor_set_direction(motor_id_t motor_id, motor_direction_t direction)
         return ESP_ERR_INVALID_ARG;
     }
 
-    return ESP_OK;
+    return ret;
 }
 
 /**
- * @brief 编码器初始化
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- */
-esp_err_t encode_init(void)
-{
-    ESP_LOGI(TAG, "正在初始化编码器系统...");
-
-    if (g_dual_motor.encoder_a.is_initialized && g_dual_motor.encoder_b.is_initialized)
-    {
-        ESP_LOGW(TAG, "编码器系统已经初始化完成");
-        return ESP_OK;
-    }
-
-    esp_err_t ret;
-
-    // 初始化电机A编码器
-    ret = encoder_init_single(&g_dual_motor.encoder_a, ENCODER_A_PHASE_A_PIN, ENCODER_A_PHASE_B_PIN, 0);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "电机A编码器初始化失败");
-        return ret;
-    }
-
-    // 初始化电机B编码器
-    ret = encoder_init_single(&g_dual_motor.encoder_b, ENCODER_B_PHASE_A_PIN, ENCODER_B_PHASE_B_PIN, 1);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "电机B编码器初始化失败");
-        // 清理电机A编码器资源
-        if (g_dual_motor.encoder_a.is_initialized)
-        {
-            pcnt_unit_stop(g_dual_motor.encoder_a.pcnt_unit);
-            pcnt_unit_disable(g_dual_motor.encoder_a.pcnt_unit);
-            pcnt_del_unit(g_dual_motor.encoder_a.pcnt_unit);
-            g_dual_motor.encoder_a.is_initialized = false;
-        }
-        return ret;
-    }
-
-    ESP_LOGI(TAG, "编码器系统初始化完成");
-    return ESP_OK;
-}
-
-/**
- * @brief 获取指定电机的转速
+ * @brief 获取电机的实际转速
  * @param motor_id 目标电机标识（MOTOR_A或MOTOR_B）
- * @param rpm 输出转速值（转/分钟）
+ * @param rpm 输出转速值（转/分钟），正值(+)：表示正转（计数增加方向），负值(-)：表示反转（计数减少方向）
  * @retval ESP_OK 成功
  * @retval ESP_FAIL 失败
  */
@@ -899,9 +890,9 @@ esp_err_t motor_get_rpm(motor_id_t motor_id, float *rpm)
     encoder_t *encoder = NULL;
     const char *motor_name = NULL;
     static int32_t last_count_a = 0, last_count_b = 0;
-    static uint32_t last_time_a = 0, last_time_b = 0;
+    static int64_t last_time_a = 0, last_time_b = 0;
     int32_t *last_count = NULL;
-    uint32_t *last_time = NULL;
+    int64_t *last_time = NULL;
 
     switch (motor_id)
     {
@@ -937,7 +928,7 @@ esp_err_t motor_get_rpm(motor_id_t motor_id, float *rpm)
         return ret;
     }
 
-    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    int64_t current_time = esp_timer_get_time(); // 获取当前系统时间(微秒)
 
     // 首次调用初始化
     if (*last_time == 0)
@@ -948,10 +939,11 @@ esp_err_t motor_get_rpm(motor_id_t motor_id, float *rpm)
         return ESP_OK;
     }
 
-    uint32_t time_diff = current_time - *last_time;
-    if (time_diff < ENCODER_SAMPLE_TIME_MS)
+    int64_t time_diff_us = current_time - *last_time;
+    // 如果时间间隔太短（例如小于10ms），则不进行计算，直接返回上次的转速
+    // 这可以避免由于时间间隔过小导致的速度计算抖动
+    if (time_diff_us < ENCODER_SAMPLE_TIME_MS * 1000)
     {
-        // 采样时间间隔太短，返回上次计算的转速
         *rpm = encoder->speed_rpm;
         return ESP_OK;
     }
@@ -961,316 +953,31 @@ esp_err_t motor_get_rpm(motor_id_t motor_id, float *rpm)
     *last_time = current_time;
 
     // 计算转速 - N20电机官方参数
-    float time_sec = (float)time_diff / 1000.0f;
+    float time_sec = (float)time_diff_us / 1000000.0f;
     int multiplier = (encoder->mode == ENCODER_MODE_X1) ? 1 : (encoder->mode == ENCODER_MODE_X2) ? 2
                                                                                                  : 4;
 
-    // 使用官方标准：减速后输出轴357.70线/转，4倍频后为1430.8计数/转
-    float counts_per_output_rev = ENCODER_OUTPUT_PPR * multiplier; // 输出轴每转的计数数
+    // 1.计算电机轴实际转速（转/秒）
+    // 电机轴每转计数 = 基础脉冲数 * 倍频系数
+    float motor_counts_per_rev = ENCODER_PPR * multiplier;
+    // 电机轴转速(RPS)
+    float motor_rps = ((float)count_diff / time_sec) / motor_counts_per_rev;
 
-    // 输出轴转速 = 计数频率 / 每转计数数 * 60
-    encoder->speed_rpm = (float)count_diff / (time_sec * counts_per_output_rev) * 60.0f;
+    // 2.计算输出轴实际转速（转/秒）
+    float real_gear_ratio = ENCODER_OUTPUT_PPR / ENCODER_PPR;
+    // 输出轴转速(RPS) = 电机轴转速(RPS) / 实际减速比
+    float output_rps = motor_rps / real_gear_ratio;
+
+    // 3.计算输出轴实际转速（转/分钟）
+    // 输出轴转速(RPM) = 输出轴转速(RPS) * 60
+    encoder->speed_rpm = output_rps * 60.0f;
     *rpm = encoder->speed_rpm;
 
-    ESP_LOGD(TAG, "%s转速: %.2f RPM (计数差值: %ld, 时间差: %lu ms, 当前计数: %ld)",
-             motor_name, *rpm, count_diff, time_diff, current_count);
-
-    return ESP_OK;
-}
-
-/**
- * @brief 获取车体累积行驶距离
- * @param distance 输出累积行驶距离（毫米）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- * @note 基于双轮编码器数据计算的累积行驶距离
- */
-esp_err_t motor_get_travel_distance(float *distance)
-{
-    if (distance == NULL)
+    static float last_output_rpm = 0.0f;
+    if (*rpm != last_output_rpm)
     {
-        ESP_LOGE(TAG, "距离输出指针为空");
-        return ESP_ERR_INVALID_ARG;
+        last_output_rpm = *rpm;
+        ESP_LOGI(TAG, "%s转速详情: 计数差=%ld, 时间间隔=%.3fs, 电机RPS=%.2f, 输出RPS=%.2f, 输出RPM=%.2f", motor_name, count_diff, time_sec, motor_rps, output_rps, *rpm);
     }
-
-    if (!g_dual_motor.is_initialized)
-    {
-        ESP_LOGE(TAG, "电机系统未初始化");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // 获取当前编码器计数
-    int32_t current_count_a, current_count_b;
-    if (encoder_get_count(&g_dual_motor.encoder_a, &current_count_a) != ESP_OK ||
-        encoder_get_count(&g_dual_motor.encoder_b, &current_count_b) != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取编码器计数失败");
-        return ESP_FAIL;
-    }
-
-    // 计算编码器计数差值
-    int32_t delta_count_a = current_count_a - g_last_encoder_a_count;
-    int32_t delta_count_b = current_count_b - g_last_encoder_b_count;
-
-    // 更新上次计数值
-    g_last_encoder_a_count = current_count_a;
-    g_last_encoder_b_count = current_count_b;
-
-    // 计算轮子转动距离（毫米）
-    // 4倍频模式下，每转计数 = ENCODER_OUTPUT_PPR * 4
-    float counts_per_rev = ENCODER_OUTPUT_PPR * 4.0f;
-    float distance_a = (float)delta_count_a / counts_per_rev * WHEEL_CIRCUMFERENCE_MM;
-    float distance_b = (float)delta_count_b / counts_per_rev * WHEEL_CIRCUMFERENCE_MM;
-
-    // 车体行驶距离为两轮平均距离
-    float delta_distance = (distance_a + distance_b) / 2.0f;
-    g_total_distance_mm += delta_distance;
-
-    *distance = g_total_distance_mm;
-    ESP_LOGD(TAG, "累积行驶距离: %.2f mm", *distance);
-    return ESP_OK;
-}
-
-/**
- * @brief 获取车体转角
- * @param angle 输出车体转角（度）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- * @note 基于差分驱动模型计算的车体转角，正值为逆时针转向
- */
-esp_err_t motor_get_vehicle_angle(float *angle)
-{
-    if (angle == NULL)
-    {
-        ESP_LOGE(TAG, "角度输出指针为空");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (!g_dual_motor.is_initialized)
-    {
-        ESP_LOGE(TAG, "电机系统未初始化");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // 获取当前编码器计数
-    int32_t current_count_a, current_count_b;
-    if (encoder_get_count(&g_dual_motor.encoder_a, &current_count_a) != ESP_OK ||
-        encoder_get_count(&g_dual_motor.encoder_b, &current_count_b) != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取编码器计数失败");
-        return ESP_FAIL;
-    }
-
-    // 计算编码器计数差值
-    int32_t delta_count_a = current_count_a - g_last_encoder_a_count;
-    int32_t delta_count_b = current_count_b - g_last_encoder_b_count;
-
-    // 更新上次计数值
-    g_last_encoder_a_count = current_count_a;
-    g_last_encoder_b_count = current_count_b;
-
-    // 计算轮子转动距离（毫米）
-    float counts_per_rev = ENCODER_OUTPUT_PPR * 4.0f;
-    float distance_a = (float)delta_count_a / counts_per_rev * WHEEL_CIRCUMFERENCE_MM;
-    float distance_b = (float)delta_count_b / counts_per_rev * WHEEL_CIRCUMFERENCE_MM;
-
-    // 差分驱动转角计算：θ = (distance_b - distance_a) / wheelbase
-    // 正值表示逆时针转向（右轮比左轮走得远）
-    float delta_angle_rad = (distance_b - distance_a) / WHEEL_BASE_MM;
-    float delta_angle_deg = delta_angle_rad * 180.0f / M_PI;
-    g_vehicle_angle_deg += delta_angle_deg;
-
-    // 角度归一化到 [-180, 180] 度范围
-    while (g_vehicle_angle_deg > 180.0f)
-        g_vehicle_angle_deg -= 360.0f;
-    while (g_vehicle_angle_deg < -180.0f)
-        g_vehicle_angle_deg += 360.0f;
-
-    *angle = g_vehicle_angle_deg;
-    ESP_LOGD(TAG, "车体转角: %.2f 度", *angle);
-    return ESP_OK;
-}
-
-/**
- * @brief 重置里程计数据
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- * @note 清零累积行驶距离和车体转角数据
- */
-esp_err_t motor_reset_odometry(void)
-{
-    if (!g_dual_motor.is_initialized)
-    {
-        ESP_LOGE(TAG, "电机系统未初始化");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // 重置里程计数据
-    g_total_distance_mm = 0.0f;
-    g_vehicle_angle_deg = 0.0f;
-
-    // 获取当前编码器计数作为新的基准
-    if (encoder_get_count(&g_dual_motor.encoder_a, &g_last_encoder_a_count) != ESP_OK ||
-        encoder_get_count(&g_dual_motor.encoder_b, &g_last_encoder_b_count) != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取编码器计数失败");
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "里程计数据已重置");
-    return ESP_OK;
-}
-
-/**
- * @brief 获取指定电机的位置角度
- * @param motor_id 目标电机标识（MOTOR_A或MOTOR_B）
- * @param position 输出位置角度值（度）
- * @retval ESP_OK 成功
- * @retval ESP_FAIL 失败
- */
-esp_err_t motor_get_position(motor_id_t motor_id, float *position)
-{
-    if (position == NULL)
-    {
-        ESP_LOGE(TAG, "位置输出指针为空");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    encoder_t *encoder = NULL;
-    const char *motor_name = NULL;
-
-    switch (motor_id)
-    {
-    case MOTOR_A:
-        encoder = &g_dual_motor.encoder_a;
-        motor_name = "电机A";
-        break;
-    case MOTOR_B:
-        encoder = &g_dual_motor.encoder_b;
-        motor_name = "电机B";
-        break;
-    default:
-        ESP_LOGE(TAG, "无效的电机ID: %d", motor_id);
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (!encoder->is_initialized)
-    {
-        ESP_LOGE(TAG, "%s编码器未初始化", motor_name);
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // 获取当前计数值
-    int32_t current_count = 0;
-    esp_err_t ret = encoder_get_count(encoder, &current_count);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取%s编码器计数失败: %s", motor_name, esp_err_to_name(ret));
-        return ret;
-    }
-
-    // 计算位置角度 - N20电机官方参数
-    int multiplier = (encoder->mode == ENCODER_MODE_X1) ? 1 : (encoder->mode == ENCODER_MODE_X2) ? 2
-                                                                                                 : 4;
-
-    // 使用官方标准：减速后输出轴357.70线/转，4倍频后为1430.8计数/转
-    float counts_per_output_rev = ENCODER_OUTPUT_PPR * multiplier; // 输出轴每转的计数数
-
-    // 输出轴角度 = 计数值 * 360° / 每转计数数
-    *position = (float)current_count * 360.0f / counts_per_output_rev;
-
-    ESP_LOGD(TAG, "%s位置: %.2f° (脉冲计数: %ld)", motor_name, *position, current_count);
-
-    return ESP_OK;
-}
-
-/**
- * @brief 获取完整的车体运动状态
- * @param[out] motion_state 车体运动状态结构体指针
- * @retval ESP_OK 成功
- * @retval ESP_ERR_INVALID_ARG 参数无效
- * @retval ESP_ERR_INVALID_STATE 编码器未初始化
- */
-esp_err_t motor_get_motion_state(vehicle_motion_state_t *motion_state)
-{
-    // 参数检查
-    if (motion_state == NULL)
-    {
-        ESP_LOGE(TAG, "运动状态结构体指针为空");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    // 编码器初始化检查
-    if (!g_dual_motor.encoder_a.is_initialized || !g_dual_motor.encoder_b.is_initialized)
-    {
-        ESP_LOGE(TAG, "编码器未初始化");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    esp_err_t ret = ESP_OK;
-
-    // 初始化结构体
-    memset(motion_state, 0, sizeof(vehicle_motion_state_t));
-    motion_state->data_valid = false;
-
-    // 获取电机A转速
-    ret = motor_get_rpm(MOTOR_A, &motion_state->motor_a_rpm);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取电机A转速失败: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // 获取电机B转速
-    ret = motor_get_rpm(MOTOR_B, &motion_state->motor_b_rpm);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取电机B转速失败: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // 获取电机A位置角度
-    ret = motor_get_position(MOTOR_A, &motion_state->motor_a_position_deg);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取电机A位置失败: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // 获取电机B位置角度
-    ret = motor_get_position(MOTOR_B, &motion_state->motor_b_position_deg);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取电机B位置失败: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // 获取累积行驶距离
-    ret = motor_get_travel_distance(&motion_state->travel_distance_mm);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取行驶距离失败: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // 获取车体转角
-    ret = motor_get_vehicle_angle(&motion_state->vehicle_angle_deg);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "获取车体转角失败: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // 设置时间戳（毫秒）
-    motion_state->timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-
-    // 标记数据有效
-    motion_state->data_valid = true;
-
-    ESP_LOGD(TAG, "运动状态 - 电机A: %.2f RPM, %.2f°; 电机B: %.2f RPM, %.2f°; 距离: %.2f mm; 转角: %.2f°",
-             motion_state->motor_a_rpm, motion_state->motor_a_position_deg,
-             motion_state->motor_b_rpm, motion_state->motor_b_position_deg,
-             motion_state->travel_distance_mm, motion_state->vehicle_angle_deg);
-
     return ESP_OK;
 }
