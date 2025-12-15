@@ -38,11 +38,6 @@
 #define PCNT_UNIT_MAX_COUNT 32767  ///< PCNT单元最大计数值
 #define PCNT_UNIT_MIN_COUNT -32768 ///< PCNT单元最小计数值
 
-// 机械参数定义
-#define WHEEL_DIAMETER_MM 65.0f                           ///< 轮子直径（毫米），空载转速58RPM,等效200mm/s
-#define WHEEL_BASE_MM 150.0f                              ///< 轮距（毫米）- 两轮中心距离
-#define WHEEL_CIRCUMFERENCE_MM (M_PI * WHEEL_DIAMETER_MM) ///< 轮子周长（毫米）
-
 // 电机标识枚举
 typedef enum
 {

@@ -9,7 +9,7 @@ typedef struct
     float kp;           // 比例系数
     float ki;           // 积分系数
     float kd;           // 微分系数
-    float output_max;   // 最大输出限幅 (例如 100.0)
+    float output_max;   // 最大输出限幅
     float integral_max; // 积分限幅，防止积分饱和
     float dead_zone;    // 死区,代表误差允许的最小范围
 } pid_params_t;
@@ -17,11 +17,11 @@ typedef struct
 // PID 运行时状态结构体
 typedef struct
 {
-    float target_speed; // 目标速度
-    float actual_speed; // 实际测量速度
-    float error_last;   // 上次误差
-    float integral_sum; // 积分累计
-    float output;       // PID计算输出
+    float target_speed; // 目标速度(额定转速34RPM)
+    float actual_speed; // 实际测量速度(过滤后的,单位为RPM)
+    float error_last;   // 上次误差(RPM)
+    float integral_sum; // 积分累计(RPM)
+    float output;       // PID计算输出(PWM占空比 (0-100%))
 } pid_state_t;
 
 // PID 控制块

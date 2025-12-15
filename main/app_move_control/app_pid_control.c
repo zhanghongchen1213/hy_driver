@@ -16,12 +16,14 @@
 static const char *TAG = "pid_control";
 
 // 默认PID参数
-#define DEFAULT_KP 0.5f            ///< 默认PID比例系数
-#define DEFAULT_KI 0.5f            ///< 默认PID积分系数
-#define DEFAULT_KD 0.01f           ///< 默认PID微分系数
+#define DEFAULT_KP 2.0f            ///< 默认PID比例系数 (原0.5)
+#define DEFAULT_KI 1.0f            ///< 默认PID积分系数 (原0.5)
+#define DEFAULT_KD 0.1f            ///< 默认PID微分系数 (原0.01)
 #define DEFAULT_OUTPUT_MAX 100.0f  ///< 默认输出最大限幅
-#define DEFAULT_INTEGRAL_MAX 50.0f ///< 默认积分最大限幅
+#define DEFAULT_INTEGRAL_MAX 85.0f ///< 默认积分最大限幅
 #define DEFAULT_DEAD_ZONE 2.0f     ///< 默认死区
+#define FILTER_COEFF 0.7f          ///< 低通滤波系数
+#define MAX_SPEED 35.0f            ///< 最大速度 (RPM)
 
 // 任务句柄
 static TaskHandle_t s_pid_task_handle = NULL;
@@ -68,13 +70,20 @@ void app_pid_init(void)
  */
 void app_pid_set_speed(motor_id_t motor_id, float speed)
 {
+    /*限制速度范围在[-MAX_SPEED, MAX_SPEED]*/
+    float local_speed = speed;
+    if (local_speed > MAX_SPEED)
+        local_speed = MAX_SPEED;
+    if (local_speed < -MAX_SPEED)
+        local_speed = -MAX_SPEED;
+
     if (motor_id == MOTOR_A || motor_id == MOTOR_BOTH)
     {
-        s_pid_ctrls[0].state.target_speed = speed;
+        s_pid_ctrls[0].state.target_speed = local_speed;
     }
     if (motor_id == MOTOR_B || motor_id == MOTOR_BOTH)
     {
-        s_pid_ctrls[1].state.target_speed = speed;
+        s_pid_ctrls[1].state.target_speed = local_speed;
     }
 }
 
@@ -127,29 +136,31 @@ static void pid_control_task(void *arg)
             float raw_rpm = 0.0f;
             motor_get_rpm(ctrl->motor_id, &raw_rpm);
 
-            // 2. 获取实际测量速度
-            ctrl->state.actual_speed = raw_rpm;
+            // 2. 获取实际测量速度, 并应用低通滤波
+            ctrl->state.actual_speed = ctrl->state.actual_speed * (1.0f - FILTER_COEFF) + raw_rpm * FILTER_COEFF;
 
             // 4. PID计算
             pid_calculate(ctrl);
 
             // 5. 输出控制
-            float output = ctrl->state.output;
+            // 注意：PID输出已被限幅在 params.output_max (默认100) 范围内
+            // 这里将 PID输出(Control Value) 解释为 PWM占空比
+            float pid_output_val = ctrl->state.output;
             motor_direction_t dir = MOTOR_DIRECTION_FORWARD;
-            uint32_t speed_pwm = 0;
+            uint32_t speed_pwm_duty = 0;
 
-            if (output >= 0)
+            if (pid_output_val >= 0)
             {
                 dir = MOTOR_DIRECTION_FORWARD;
-                speed_pwm = (uint32_t)output;
+                speed_pwm_duty = (uint32_t)pid_output_val;
             }
             else
             {
                 dir = MOTOR_DIRECTION_REVERSE;
-                speed_pwm = (uint32_t)(-output);
+                speed_pwm_duty = (uint32_t)(-pid_output_val);
             }
-            // 执行电机控制
-            motor_set_speed_and_dir(ctrl->motor_id, speed_pwm, dir);
+            // 执行电机控制 (输入为 PWM 0-100)
+            motor_set_speed_and_dir(ctrl->motor_id, speed_pwm_duty, dir);
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -157,6 +168,9 @@ static void pid_control_task(void *arg)
 
 /**
  * @brief 位置式PID计算核心
+ * @note 关于单位换算的重要说明：
+ *       PID控制器的输入误差(error)单位是 RPM (转/分钟)
+ *       PID控制器的输出(output)单位是 PWM占空比 (0-100%)
  */
 static void pid_calculate(pid_ctrl_block_t *ctrl)
 {
@@ -168,7 +182,7 @@ static void pid_calculate(pid_ctrl_block_t *ctrl)
         error = 0.0f;
     }
 
-    // 比例项
+    // 比例项 (P_out单位为PWM%)
     float p_out = ctrl->params.kp * error;
 
     // 积分项 (带抗饱和)
@@ -183,10 +197,10 @@ static void pid_calculate(pid_ctrl_block_t *ctrl)
     // 微分项
     float d_out = ctrl->params.kd * (error - ctrl->state.error_last);
 
-    // 总输出
+    // 总输出 (单位: PWM占空比%, 范围理论上可能超过100，需限幅)
     float total_out = p_out + i_out + d_out;
 
-    // 输出限幅
+    // 输出限幅 (适配 motor_set_speed_and_dir 的输入范围 0-100)
     if (total_out > ctrl->params.output_max)
         total_out = ctrl->params.output_max;
     else if (total_out < -ctrl->params.output_max)
