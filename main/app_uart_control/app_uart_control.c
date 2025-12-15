@@ -211,11 +211,15 @@ static void brain_execute_command(const uart_downlink_packet_t *pkt)
 #if PID_DEBUG
     // 更新PID目标速度
     app_pid_set_speed(MOTOR_A, pkt->left_target_speed);
-    app_pid_set_speed(MOTOR_B, pkt->right_target_speed);
+    app_pid_set_speed(MOTOR_B, pkt->left_target_speed);
+    (void)pkt->right_target_speed;
 
     // 更新PID参数
     app_pid_set_params(MOTOR_A, pkt->left_kp, pkt->left_ki, pkt->left_kd);
-    app_pid_set_params(MOTOR_B, pkt->right_kp, pkt->right_ki, pkt->right_kd);
+    app_pid_set_params(MOTOR_B, pkt->left_kp, pkt->left_ki, pkt->left_kd);
+    (void)pkt->right_kp;
+    (void)pkt->right_ki;
+    (void)pkt->right_kd;
 
     ESP_LOGI(TAG, "更新电机控制: 左目标=%.2f, 右目标=%.2f, 左PID[%.2f,%.2f,%.2f], 右PID[%.2f,%.2f,%.2f]",
              pkt->left_target_speed, pkt->right_target_speed,
@@ -305,11 +309,6 @@ static void brain_send_uplink(void)
     pkt.servo_a_angle = angles.angle_a;
     pkt.servo_b_angle = angles.angle_b;
     pkt.servo_c_angle = angles.angle_c;
-
-    // 3. 获取电机PID状态 (调试)
-    const pid_ctrl_block_t *pid_a = app_pid_get_status(MOTOR_A);
-    const pid_ctrl_block_t *pid_b = app_pid_get_status(MOTOR_B);
-
 #endif
 
     pkt.timestamp = (uint32_t)(esp_timer_get_time() / 1000ULL);

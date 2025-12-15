@@ -16,13 +16,13 @@
 static const char *TAG = "pid_control";
 
 // 默认PID参数
-#define DEFAULT_KP 2.0f            ///< 默认PID比例系数 (原0.5)
-#define DEFAULT_KI 1.0f            ///< 默认PID积分系数 (原0.5)
-#define DEFAULT_KD 0.1f            ///< 默认PID微分系数 (原0.01)
+#define DEFAULT_KP 8.5f            ///< 默认PID比例系数
+#define DEFAULT_KI 1.0f            ///< 默认PID积分系数
+#define DEFAULT_KD 0.5f            ///< 默认PID微分系数
 #define DEFAULT_OUTPUT_MAX 100.0f  ///< 默认输出最大限幅
 #define DEFAULT_INTEGRAL_MAX 85.0f ///< 默认积分最大限幅
-#define DEFAULT_DEAD_ZONE 2.0f     ///< 默认死区
-#define FILTER_COEFF 0.7f          ///< 低通滤波系数
+#define DEFAULT_DEAD_ZONE 1.5f     ///< 默认死区
+#define FILTER_COEFF 0.6f          ///< 低通滤波系数
 #define MAX_SPEED 35.0f            ///< 最大速度 (RPM)
 
 // 任务句柄
