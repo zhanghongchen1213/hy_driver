@@ -1,7 +1,7 @@
 #include "servo_control.h"
 
 static const char *TAG = "SERVO";
-static int16_t s_servo_actual_angles[3] = {SERVO_A_ZERO_POSITION, SERVO_B_ZERO_POSITION, SERVO_C_ZERO_POSITION};
+static int16_t s_servo_actual_angles[3] = {0, 0, 0};
 void servo_init(void)
 {
     servo_config_t servo_cfg = {

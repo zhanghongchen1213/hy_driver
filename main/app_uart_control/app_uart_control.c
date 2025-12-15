@@ -1,5 +1,4 @@
 #include "app_uart_control.h"
-#include "app_pid_control.h"
 
 static const char *TAG = "APP_UART";
 
@@ -209,9 +208,8 @@ static void brain_execute_command(const uart_downlink_packet_t *pkt)
     s_audio_stream_flag = pkt->audio_stream_flag;
     ESP_LOGI(TAG, "收到控制指令 时间戳=%u, 音频流标志=%u", (unsigned)pkt->timestamp, (unsigned)pkt->audio_stream_flag);
 
+#if PID_DEBUG
     // 更新PID目标速度
-    float left_target_speed = pkt->left_target_speed;
-    float right_target_speed = pkt->right_target_speed;
     app_pid_set_speed(MOTOR_A, pkt->left_target_speed);
     app_pid_set_speed(MOTOR_B, pkt->right_target_speed);
 
@@ -223,6 +221,33 @@ static void brain_execute_command(const uart_downlink_packet_t *pkt)
              pkt->left_target_speed, pkt->right_target_speed,
              pkt->left_kp, pkt->left_ki, pkt->left_kd,
              pkt->right_kp, pkt->right_ki, pkt->right_kd);
+#else
+    // 读取并舍弃left_target_speed到right_kd的内存空间
+    (void)pkt->left_target_speed;
+    (void)pkt->right_target_speed;
+    (void)pkt->left_kp;
+    (void)pkt->left_ki;
+    (void)pkt->left_kd;
+    (void)pkt->right_kp;
+    (void)pkt->right_ki;
+    (void)pkt->right_kd;
+#endif
+
+#if UPDATE_ODOMETRY_DEBUG
+    float target_left_rpm = 0;
+    float target_right_rpm = 0;
+    inverse_kinematics(pkt->linear_vel, pkt->angular_vel, &target_left_rpm, &target_right_rpm);
+    app_pid_set_speed(MOTOR_A, target_left_rpm);
+    app_pid_set_speed(MOTOR_B, target_right_rpm);
+    ESP_LOGI(TAG, "更新电机控制: 目标线速度=%.2f, 目标角速度=%.2f, 左目标=%.2f, 右目标=%.2f",
+             pkt->linear_vel, pkt->angular_vel, target_left_rpm, target_right_rpm);
+
+    servo_set_angle(SERVO_A, pkt->servo_a_angle);
+    servo_set_angle(SERVO_B, pkt->servo_b_angle);
+    servo_set_angle(SERVO_C, pkt->servo_c_angle);
+    ESP_LOGI(TAG, "更新舵机控制: 目标A=%.2f, 目标B=%.2f, 目标C=%.2f",
+             pkt->servo_a_angle, pkt->servo_b_angle, pkt->servo_c_angle);
+#endif
 }
 
 /**
@@ -257,6 +282,35 @@ static void brain_send_uplink(void)
         pkt.right_ki = pid_b->params.ki;
         pkt.right_kd = pid_b->params.kd;
     }
+
+#if UPDATE_ODOMETRY_DEBUG
+    // 1. 获取里程计状态 (SLAM/Nav/RVIZ)
+    odom_t *odom = get_odometry();
+    if (odom != NULL)
+    {
+        pkt.position_x = odom->x;
+        pkt.position_y = odom->y;
+        pkt.linear_vel = odom->linear_vel;
+        pkt.angular_vel = odom->angular_vel;
+
+        // 填充四元数
+        pkt.q_w = odom->q.w;
+        pkt.q_x = odom->q.x;
+        pkt.q_y = odom->q.y;
+        pkt.q_z = odom->q.z;
+    }
+
+    // 2. 获取舵机角度 (Joint State)
+    servo_angles_t angles = servo_get_actual_angles();
+    pkt.servo_a_angle = angles.angle_a;
+    pkt.servo_b_angle = angles.angle_b;
+    pkt.servo_c_angle = angles.angle_c;
+
+    // 3. 获取电机PID状态 (调试)
+    const pid_ctrl_block_t *pid_a = app_pid_get_status(MOTOR_A);
+    const pid_ctrl_block_t *pid_b = app_pid_get_status(MOTOR_B);
+
+#endif
 
     pkt.timestamp = (uint32_t)(esp_timer_get_time() / 1000ULL);
     pkt.end_flag = SEND_PACKET_END_FLAG;

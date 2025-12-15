@@ -27,6 +27,9 @@ void app_main(void)
     rtos_audio_control_init(); // 音频播報任务初始化
     rtos_uart_init();          // 串口通信任务初始化
     app_pid_init();            // PID控制器初始化
+#if UPDATE_ODOMETRY_DEBUG
+    app_move_control_init(); // 运动控制初始化
+#endif
 #if BLUE_CONTROL
     rtos_blue_control_init(); // 蓝牙控制任务初始化
 #endif

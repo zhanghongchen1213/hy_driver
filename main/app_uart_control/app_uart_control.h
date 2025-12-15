@@ -27,16 +27,36 @@ typedef struct
 
     uint16_t chat_gpt_count; ///< 用户触发CHAT_GPT的次数统计
 
+    // --- 电机与PID状态 (调试用) ---
     float left_target_speed;  ///< 左电机目标速度
     float right_target_speed; ///< 右电机目标速度
     float left_actual_speed;  ///< 左电机实际速度
     float right_actual_speed; ///< 右电机实际速度
-    float left_kp;            ///< 左电机PID比例系数
-    float left_ki;            ///< 左电机PID积分系数
-    float left_kd;            ///< 左电机PID微分系数
-    float right_kp;           ///< 右电机PID比例系数
-    float right_ki;           ///< 右电机PID积分系数
-    float right_kd;           ///< 右电机PID微分系数
+    float left_kp;
+    float left_ki;
+    float left_kd;
+    float right_kp;
+    float right_ki;
+    float right_kd;
+
+#if UPDATE_ODOMETRY_DEBUG
+    // --- 里程计与姿态 (用于SLAM/Nav/RVIZ) ---
+    float position_x;  ///< 位置 X (mm)
+    float position_y;  ///< 位置 Y (mm)
+    float linear_vel;  ///< 线速度 (mm/s)
+    float angular_vel; ///< 角速度 (rad/s)
+
+    // 姿态四元数 (用于数字孪生)
+    float q_w;
+    float q_x;
+    float q_y;
+    float q_z;
+
+    // --- 关节状态 (用于Joint State) ---
+    int16_t servo_a_angle;
+    int16_t servo_b_angle;
+    int16_t servo_c_angle;
+#endif
 
     uint32_t timestamp; ///< 时间戳 (ms)
     uint8_t end_flag;   ///< 结束标志 0x55
@@ -60,6 +80,14 @@ typedef struct
     float right_kp;           ///< 右电机PID比例系数
     float right_ki;           ///< 右电机PID积分系数
     float right_kd;           ///< 右电机PID微分系数
+
+#if UPDATE_ODOMETRY_DEBUG
+    float linear_vel;    ///< 线速度 (mm/s)
+    float angular_vel;   ///< 角速度 (rad/s)
+    float servo_a_angle; ///< 舵机A角度 (°)
+    float servo_b_angle; ///< 舵机B角度 (°)
+    float servo_c_angle; ///< 舵机C角度 (°)
+#endif
 
     uint32_t timestamp; ///< 时间戳 (ms)
     uint8_t end_flag;   ///< 结束标志 0x66

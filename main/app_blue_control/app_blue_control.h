@@ -23,7 +23,9 @@
 /// @brief 控制命令结构体
 typedef struct
 {
-    uint8_t motor_enable; // 电机使能标志
+    float linear_vel;   // 线速度
+    float angular_vel;  // 角速度
+    uint32_t timestamp; // 时间戳
 } ControlCommand;
 
 /// @brief 蓝牙接收数据结构体
