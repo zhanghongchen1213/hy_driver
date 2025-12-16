@@ -245,13 +245,15 @@ static void brain_execute_command(const uart_downlink_packet_t *pkt)
     app_pid_set_speed(MOTOR_B, target_right_rpm);
     ESP_LOGI(TAG, "更新电机控制: 目标线速度=%.2f, 目标角速度=%.2f, 左目标=%.2f, 右目标=%.2f",
              pkt->linear_vel, pkt->angular_vel, target_left_rpm, target_right_rpm);
-
-    // servo_set_angle(SERVO_A, pkt->servo_a_angle);
-    // servo_set_angle(SERVO_B, pkt->servo_b_angle);
-    // servo_set_angle(SERVO_C, pkt->servo_c_angle);
+#if SERVO_DEBUG
+    servo_set_angle(SERVO_A, pkt->servo_a_angle);
+    servo_set_angle(SERVO_B, pkt->servo_b_angle);
+    servo_set_angle(SERVO_C, pkt->servo_c_angle);
+#else
     (void)pkt->servo_a_angle;
     (void)pkt->servo_b_angle;
     (void)pkt->servo_c_angle;
+#endif
     ESP_LOGD(TAG, "更新舵机控制: 目标A=%.2f, 目标B=%.2f, 目标C=%.2f",
              pkt->servo_a_angle, pkt->servo_b_angle, pkt->servo_c_angle);
 #endif
@@ -297,8 +299,6 @@ static void brain_send_uplink(void)
     {
         pkt.position_x = odom->x;
         pkt.position_y = odom->y;
-        pkt.linear_vel = odom->linear_vel;
-        pkt.angular_vel = odom->angular_vel;
 
         // 填充四元数
         pkt.q_w = odom->q.w;

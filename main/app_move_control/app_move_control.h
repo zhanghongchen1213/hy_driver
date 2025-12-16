@@ -4,8 +4,8 @@
 #include "all_include.h"
 
 // 机械参数定义
-#define WHEEL_DIAMETER_MM 65.0f                           ///< 轮子直径（毫米），空载转速58RPM,等效200mm/s
-#define WHEEL_BASE_MM 150.0f                              ///< 轮距（毫米）- 左右两轮中心距离
+#define WHEEL_DIAMETER_MM 60.0f                           ///< 轮子直径（毫米），空载转速58RPM,等效200mm/s
+#define WHEEL_BASE_MM 125.0f                              ///< 轮距（毫米）- 左右两轮中心距离
 #define WHEEL_CIRCUMFERENCE_MM (M_PI * WHEEL_DIAMETER_MM) ///< 轮子周长（毫米）
 
 // 简单的四元数结构体

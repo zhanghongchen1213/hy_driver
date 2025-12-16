@@ -152,7 +152,8 @@
       "esp_http_client.h": "c",
       "ringbuf.h": "c",
       "esp_vfs.h": "c",
-      "motor.h": "c"
+      "motor.h": "c",
+      "complex": "c"
     }
   }
 }

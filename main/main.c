@@ -47,8 +47,10 @@ static void hardware_init(void)
 {
     // 串口通信启动
     uart_comm_init_all();
+#if SERVO_DEBUG
     // 舵机启动
-    // servo_init();
+    servo_init();
+#endif
     // 电机及编码器初始化
     motor_init();
 }

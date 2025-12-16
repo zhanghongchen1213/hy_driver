@@ -41,10 +41,8 @@ typedef struct
 
 #if UPDATE_ODOMETRY_DEBUG
     // --- 里程计与姿态 (用于SLAM/Nav/RVIZ) ---
-    float position_x;  ///< 位置 X (mm)
-    float position_y;  ///< 位置 Y (mm)
-    float linear_vel;  ///< 线速度 (mm/s)
-    float angular_vel; ///< 角速度 (rad/s)
+    float position_x; ///< 位置 X (mm)
+    float position_y; ///< 位置 Y (mm)
 
     // 姿态四元数 (用于数字孪生)
     float q_w;
