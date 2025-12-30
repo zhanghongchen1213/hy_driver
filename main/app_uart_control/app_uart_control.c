@@ -299,6 +299,13 @@ static void brain_send_uplink(void)
     {
         pkt.position_x = odom->x;
         pkt.position_y = odom->y;
+        pkt.theta_wheel = odom->angle;
+        pkt.linear_vel_x = odom->linear_vel;
+        pkt.angular_vel_wheel = odom->angular_vel;
+
+        pkt.gyro_x = odom->gyro_x;
+        pkt.gyro_y = odom->gyro_y;
+        pkt.gyro_z = odom->gyro_z;
 
         // 填充四元数
         pkt.q_w = odom->q.w;

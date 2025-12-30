@@ -35,37 +35,24 @@ static void update_odometry_internal(float rpm_left, float rpm_right, float dt_s
     float wheel_w = 0.0f;
     forward_kinematics(rpm_left, rpm_right, &wheel_v, &wheel_w);
 
-    // 2. 获取IMU数据进行融合校准
-    // 轮式里程计的角速度容易受打滑影响，使用IMU陀螺仪数据更准确
+    // 2. 获取IMU数据
     t_sQMI8658 imu_data;
     imu_data_resolution(&imu_data);
 
-    // IMU gyr_z 单位是 dps (度/秒)，转换为 rad/s
-    // 注意：需确认IMU安装方向，假设Z轴垂直向上，逆时针为正
-    float imu_w = imu_data.gyr_z * (M_PI / 180.0f);
-
-    // 简单融合策略：
-    // 角速度主要信任IMU (假设IMU已校准且漂移可接受)
-    // 线速度信任编码器
-    // 如果需要更复杂的融合(如EKF)，可以在此扩展
-    float fused_w = imu_w;
-
-    // 如果处于静止状态(编码器显示不动)，可以强制角速度为0以消除IMU零漂
-    if (fabs(wheel_v) < 1.0f && fabs(wheel_w) < 0.1f)
-    {
-        if (fabs(fused_w) < 0.05f)
-        { // 设定一个IMU静止死区
-            fused_w = 0.0f;
-        }
-    }
+    // 将IMU数据转换并保存到 s_odom
+    // IMU单位是 dps (度/秒)，转换为 rad/s
+    float dps_to_rad = M_PI / 180.0f;
+    s_odom.gyro_x = imu_data.gyr_x * dps_to_rad;
+    s_odom.gyro_y = imu_data.gyr_y * dps_to_rad;
+    s_odom.gyro_z = imu_data.gyr_z * dps_to_rad;
 
     // 3. 更新状态
     s_odom.linear_vel = wheel_v;
-    s_odom.angular_vel = fused_w;
+    s_odom.angular_vel = wheel_w;
 
     // 积分计算位置和角度
     // 航向角积分
-    s_odom.angle += fused_w * dt_s;
+    s_odom.angle += wheel_w * dt_s;
 
     // 归一化角度到 [-PI, PI]
     while (s_odom.angle > M_PI)
@@ -77,9 +64,20 @@ static void update_odometry_internal(float rpm_left, float rpm_right, float dt_s
     s_odom.x += wheel_v * cosf(s_odom.angle) * dt_s;
     s_odom.y += wheel_v * sinf(s_odom.angle) * dt_s;
 
-    // 4. 更新姿态四元数 (校准修正)
-    // 根据当前融合后的Yaw角更新四元数
-    yaw_to_quaternion(s_odom.angle, &s_odom.q);
+    // --- IMU部分：独立积分用于计算四元数 ---
+    // 定义一个静态变量来累积 IMU 的 Yaw 角
+    static float s_imu_angle = 0.0f;
+    s_imu_angle += s_odom.gyro_z * dt_s;
+
+    // 归一化 IMU 角度
+    while (s_imu_angle > M_PI)
+        s_imu_angle -= 2.0f * M_PI;
+    while (s_imu_angle < -M_PI)
+        s_imu_angle += 2.0f * M_PI;
+
+    // 4. 更新姿态四元数
+    // 强制使用纯 IMU 积分得到的 Yaw 角
+    yaw_to_quaternion(s_imu_angle, &s_odom.q);
 }
 
 /**
@@ -139,19 +137,19 @@ void app_move_control_init(void)
  */
 void inverse_kinematics(float linear_vel, float angular_vel, float *rpm_left, float *rpm_right)
 {
-    // 计算左右轮线速度 (mm/s)
-    float vel_left = linear_vel - (angular_vel * WHEEL_BASE_MM / 2.0f);
-    float vel_right = linear_vel + (angular_vel * WHEEL_BASE_MM / 2.0f);
+    // 计算左右轮线速度 (m/s)
+    float vel_left = linear_vel - (angular_vel * WHEEL_BASE_M / 2.0f);
+    float vel_right = linear_vel + (angular_vel * WHEEL_BASE_M / 2.0f);
 
     // 转换为RPM
-    // RPM = (mm/s) / (mm/rev) * 60 (s/min)
+    // RPM = (m/s) / (m/rev) * 60 (s/min)
     if (rpm_left)
     {
-        *rpm_left = (vel_left / WHEEL_CIRCUMFERENCE_MM) * 60.0f;
+        *rpm_left = (vel_left / WHEEL_CIRCUMFERENCE_M) * 60.0f;
     }
     if (rpm_right)
     {
-        *rpm_right = (vel_right / WHEEL_CIRCUMFERENCE_MM) * 60.0f;
+        *rpm_right = (vel_right / WHEEL_CIRCUMFERENCE_M) * 60.0f;
     }
 }
 
@@ -165,9 +163,9 @@ void inverse_kinematics(float linear_vel, float angular_vel, float *rpm_left, fl
  */
 void forward_kinematics(float rpm_left, float rpm_right, float *linear_vel, float *angular_vel)
 {
-    // 计算左右轮线速度 (mm/s)
-    float vel_left = (rpm_left * WHEEL_CIRCUMFERENCE_MM) / 60.0f;
-    float vel_right = (rpm_right * WHEEL_CIRCUMFERENCE_MM) / 60.0f;
+    // 计算左右轮线速度 (m/s)
+    float vel_left = (rpm_left * WHEEL_CIRCUMFERENCE_M) / 60.0f;
+    float vel_right = (rpm_right * WHEEL_CIRCUMFERENCE_M) / 60.0f;
 
     // 计算整车线速度和角速度
     if (linear_vel)
@@ -176,7 +174,7 @@ void forward_kinematics(float rpm_left, float rpm_right, float *linear_vel, floa
     }
     if (angular_vel)
     {
-        *angular_vel = (vel_right - vel_left) / WHEEL_BASE_MM;
+        *angular_vel = (vel_right - vel_left) / WHEEL_BASE_M;
     }
 }
 

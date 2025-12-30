@@ -41,14 +41,22 @@ typedef struct
 
 #if UPDATE_ODOMETRY_DEBUG
     // --- 里程计与姿态 (用于SLAM/Nav/RVIZ) ---
-    float position_x; ///< 位置 X (mm)
-    float position_y; ///< 位置 Y (mm)
+    float position_x;        ///< 仅通过编码器积分得到的位置 X (m)
+    float position_y;        ///< 仅通过编码器积分得到的位置 Y (m)
+    float theta_wheel;       ///< 仅通过编码器积分得到的 θ (单位: rad)
+    float linear_vel_x;      ///< 编码器计算的线速度 (单位: m/s)
+    float angular_vel_wheel; ///< 编码器计算的角速度 (单位: rad/s)
+
+    // --- IMU 传感器部分 (Pure IMU Data) ---
+    float gyro_x; // IMU 陀螺仪原始数据 (rad/s)
+    float gyro_y; // IMU 陀螺仪原始数据 (rad/s)
+    float gyro_z; // IMU 陀螺仪原始数据 (rad/s) -> 最重要！
 
     // 姿态四元数 (用于数字孪生)
-    float q_w;
-    float q_x;
-    float q_y;
-    float q_z;
+    float q_w;  // 仅通过IMU积分得到的四元数 w 分量
+    float q_x;  // 仅通过IMU积分得到的四元数 x 分量
+    float q_y;  // 仅通过IMU积分得到的四元数 y 分量
+    float q_z;  // 仅通过IMU积分得到的四元数 z 分量
 
     // --- 关节状态 (用于Joint State) ---
     int16_t servo_a_angle;
@@ -80,7 +88,7 @@ typedef struct
     float right_kd;           ///< 右电机PID微分系数
 
 #if UPDATE_ODOMETRY_DEBUG
-    float linear_vel;    ///< 线速度 (mm/s)
+    float linear_vel;    ///< 线速度 (m/s)
     float angular_vel;   ///< 角速度 (rad/s)
     float servo_a_angle; ///< 舵机A角度 (°)
     float servo_b_angle; ///< 舵机B角度 (°)

@@ -23,7 +23,7 @@ static const char *TAG = "pid_control";
 #define DEFAULT_INTEGRAL_MAX 85.0f ///< 默认积分最大限幅
 #define DEFAULT_DEAD_ZONE 1.5f     ///< 默认死区
 #define FILTER_COEFF 0.6f          ///< 低通滤波系数
-#define MAX_SPEED 35.0f            ///< 最大速度 (RPM)
+#define MAX_SPEED 35.0f            ///< 最大速度 (RPM)，等价最大线速度为 0.11m/s，最大角速度为 1.76rad/s
 
 // 任务句柄
 static TaskHandle_t s_pid_task_handle = NULL;

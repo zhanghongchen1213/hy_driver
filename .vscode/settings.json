@@ -146,6 +146,6 @@
     "app_pid_control.h": "c",
     "app_uart_control.h": "c"
   },
-  "idf.portWin": "COM10",
+  "idf.portWin": "COM7",
   "idf.flashType": "UART"
 }
