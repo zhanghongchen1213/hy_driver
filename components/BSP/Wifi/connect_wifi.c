@@ -44,6 +44,44 @@
 
 /* ========================= 全局变量与事件组 ========================= */
 
+/**
+ * FreeRTOS EventGroup 同步机制说明：
+ * =========================================================================
+ * EventGroup 是 FreeRTOS 提供的任务间同步机制，用于多任务之间的事件通知。
+ *
+ * 工作原理：
+ * - EventGroup 包含一组事件位（通常 24 位可用）
+ * - 任务可以设置（Set）或清除（Clear）事件位
+ * - 任务可以等待（Wait）一个或多个事件位被设置
+ *
+ * 本模块使用场景：
+ * 1. Wi-Fi 事件处理任务（event_handler）设置事件位
+ * 2. 应用任务（wifi_wait_connected）等待事件位
+ * 3. 实现异步连接的同步等待机制
+ *
+ * 事件位定义：
+ * - WIFI_CONNECTED_BIT (BIT0)：连接成功并获取到 IP
+ * - WIFI_FAIL_BIT (BIT1)：连接失败（达到最大重试次数）
+ *
+ * 同步流程：
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │ 主任务                    EventGroup              事件处理任务 │
+ * │                                                             │
+ * │ wifi_init_sta()                                             │
+ * │    ↓                                                        │
+ * │ 创建 EventGroup                                             │
+ * │    ↓                                                        │
+ * │ 启动 Wi-Fi                                                  │
+ * │    ↓                          ↓                             │
+ * │ wifi_wait_connected()    等待事件位    ← event_handler()    │
+ * │    ↓                          ↓              设置事件位      │
+ * │ 阻塞等待              CONNECTED_BIT                          │
+ * │    ↓                    或 FAIL_BIT                          │
+ * │ 返回结果                                                     │
+ * └─────────────────────────────────────────────────────────────┘
+ * =========================================================================
+ */
+
 /** @brief FreeRTOS 事件组句柄，用于通知连接状态 */
 static EventGroupHandle_t s_wifi_event_group;
 
@@ -60,46 +98,98 @@ static int s_retry_num = 0;
 /* ========================= 函数实现 ========================= */
 
 /**
- * @brief Wi-Fi 事件处理回调函数
+ * @brief  Wi-Fi 事件处理回调函数
  *
- * 处理 Wi-Fi 启动、断开连接和 IP 获取事件。
+ * Wi-Fi 重连策略说明：
+ * =========================================================================
+ * 本模块实现了基于计数器的自动重连机制，确保 Wi-Fi 连接的可靠性。
  *
- * @param arg 用户参数（未使用）
- * @param event_base 事件基类
- * @param event_id 事件 ID
- * @param event_data 事件数据
+ * 重连策略：
+ * 1. 最大重试次数：EXAMPLE_ESP_MAXIMUM_RETRY（默认 5 次）
+ * 2. 重试间隔：由 ESP-IDF Wi-Fi 驱动自动管理（通常 1-2 秒）
+ * 3. 重试计数器：s_retry_num（全局静态变量）
+ *
+ * 状态机流程：
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │                     Wi-Fi 连接状态机                         │
+ * │                                                             │
+ * │  [启动] → WIFI_EVENT_STA_START                              │
+ * │     ↓                                                       │
+ * │  调用 esp_wifi_connect()                                    │
+ * │     ↓                                                       │
+ * │  [连接中]                                                   │
+ * │     ↓                                                       │
+ * │  ┌─────────────────┐                                       │
+ * │  │ 连接成功？      │                                       │
+ * │  └─────────────────┘                                       │
+ * │     ↓           ↓                                           │
+ * │   是          否                                            │
+ * │     ↓           ↓                                           │
+ * │  IP_EVENT_   WIFI_EVENT_                                   │
+ * │  STA_GOT_IP  STA_DISCONNECTED                              │
+ * │     ↓           ↓                                           │
+ * │  设置        重试次数 < 最大值？                            │
+ * │  CONNECTED      ↓           ↓                              │
+ * │  _BIT         是          否                               │
+ * │               ↓           ↓                                │
+ * │            重连      设置 FAIL_BIT                          │
+ * │            s_retry_num++                                   │
+ * └─────────────────────────────────────────────────────────────┘
+ *
+ * 重连触发条件：
+ * - Wi-Fi 信号丢失
+ * - AP 主动断开连接
+ * - 认证失败
+ * - DHCP 超时
+ *
+ * 重连终止条件：
+ * - 连接成功并获取到 IP（设置 WIFI_CONNECTED_BIT）
+ * - 达到最大重试次数（设置 WIFI_FAIL_BIT）
+ * =========================================================================
+ *
+ * @param  arg         用户参数（未使用）
+ * @param  event_base  事件基类（WIFI_EVENT 或 IP_EVENT）
+ * @param  event_id    事件 ID
+ * @param  event_data  事件数据
  */
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
 {
-    // 处理 Wi-Fi 启动事件
+    /* =====================================================================
+     * 事件 1: Wi-Fi 启动完成
+     * ===================================================================== */
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
         esp_wifi_connect(); // 开始连接 AP
     }
-    // 处理 Wi-Fi 断开连接事件
+    /* =====================================================================
+     * 事件 2: Wi-Fi 断开连接（触发重连机制）
+     * ===================================================================== */
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
         if (s_retry_num < EXAMPLE_ESP_MAXIMUM_RETRY)
         {
+            /* 重连策略：未达到最大重试次数，继续尝试连接 */
             esp_wifi_connect(); // 尝试重连
             s_retry_num++;
             ESP_LOGI(TAG, "正在重试连接 AP (尝试 %d/%d)", s_retry_num, EXAMPLE_ESP_MAXIMUM_RETRY);
         }
         else
         {
-            // 超过最大重试次数，设置失败标志位
+            /* 重连失败：达到最大重试次数，设置失败标志位 */
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
         ESP_LOGI(TAG, "连接 AP 失败");
     }
-    // 处理获取 IP 地址事件
+    /* =====================================================================
+     * 事件 3: 获取 IP 地址（连接成功）
+     * ===================================================================== */
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "获取到 IP:" IPSTR, IP2STR(&event->ip_info.ip));
-        s_retry_num = 0; // 重置重试计数
-        // 设置连接成功标志位
+        s_retry_num = 0; // 重置重试计数（为下次断线重连做准备）
+        /* 设置连接成功标志位，唤醒等待的任务 */
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }

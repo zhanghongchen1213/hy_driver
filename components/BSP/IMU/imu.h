@@ -1,3 +1,26 @@
+/**
+ * @file imu.h
+ * @brief QMI8658 六轴 IMU 传感器驱动
+ *
+ * 本模块实现 QMI8658 六轴惯性测量单元（IMU）的驱动程序，
+ * 包括加速度计和陀螺仪的数据采集、姿态角计算等功能。
+ *
+ * 硬件配置：
+ * - 传感器型号：QMI8658（六轴 IMU）
+ * - 通信接口：I2C（400kHz 快速模式）
+ * - I2C 地址：0x6A（7位地址）
+ * - GPIO 引脚：SDA=GPIO1, SCL=GPIO2
+ *
+ * 传感器配置：
+ * - 加速度计：±4g 量程，250Hz 采样率
+ * - 陀螺仪：±512dps 量程，250Hz 采样率
+ * - 低通滤波：已启用
+ *
+ * @author ZHC
+ * @date 2025
+ * @version 1.0
+ */
+
 #ifndef __IMU_H__
 #define __IMU_H__
 
@@ -14,14 +37,19 @@
 #include "esp_timer.h"
 #include "esp_dsp.h"
 
-#define BSP_I2C_SDA GPIO_NUM_1
-#define BSP_I2C_SCL GPIO_NUM_2
-#define BSP_I2C_NUM (0)
-#define BSP_I2C_FREQ_HZ 400000
-#define QMI8658_SENSOR_ADDR 0x6A // 8位地址模式
-#define ACC_SCALE 4.0f           // ±4g
-#define GYRO_SCALE 512.0f        // ±512dps
-#define ADC_RESOLUTION 32768.0f
+/* I2C 总线配置 */
+#define BSP_I2C_SDA GPIO_NUM_1   // I2C 数据线引脚（SDA）
+#define BSP_I2C_SCL GPIO_NUM_2   // I2C 时钟线引脚（SCL）
+#define BSP_I2C_NUM (0)          // 使用 I2C 端口 0
+#define BSP_I2C_FREQ_HZ 400000   // I2C 时钟频率 400kHz（快速模式）
+
+/* QMI8658 传感器配置 */
+#define QMI8658_SENSOR_ADDR 0x6A // I2C 从机地址（7位地址模式）
+
+/* 传感器量程和分辨率 */
+#define ACC_SCALE 4.0f           // 加速度计量程：±4g
+#define GYRO_SCALE 512.0f        // 陀螺仪量程：±512dps（度/秒）
+#define ADC_RESOLUTION 32768.0f  // 16位ADC分辨率（2^15，有符号整数范围）
 
 #ifdef _BV
 #undef _BV
@@ -36,73 +64,77 @@
 #define highByte(w) ((uint8_t)((w) >> 8))
 #endif
 
-// QMI8658寄存器地址
+/**
+ * @brief QMI8658 寄存器地址枚举
+ *
+ * 定义 QMI8658 传感器的所有寄存器地址
+ */
 enum qmi8658_reg
 {
-    QMI8658_WHO_AM_I,
-    QMI8658_REVISION_ID,
-    QMI8658_CTRL1,
-    QMI8658_CTRL2,
-    QMI8658_CTRL3,
-    QMI8658_CTRL4,
-    QMI8658_CTRL5,
-    QMI8658_CTRL6,
-    QMI8658_CTRL7,
-    QMI8658_CTRL8,
-    QMI8658_CTRL9,
-    QMI8658_CATL1_L,
-    QMI8658_CATL1_H,
-    QMI8658_CATL2_L,
-    QMI8658_CATL2_H,
-    QMI8658_CATL3_L,
-    QMI8658_CATL3_H,
-    QMI8658_CATL4_L,
-    QMI8658_CATL4_H,
-    QMI8658_FIFO_WTM_TH,
-    QMI8658_FIFO_CTRL,
-    QMI8658_FIFO_SMPL_CNT,
-    QMI8658_FIFO_STATUS,
-    QMI8658_FIFO_DATA,
-    QMI8658_STATUSINT = 45,
-    QMI8658_STATUS0,
-    QMI8658_STATUS1,
-    QMI8658_TIMESTAMP_LOW,
-    QMI8658_TIMESTAMP_MID,
-    QMI8658_TIMESTAMP_HIGH,
-    QMI8658_TEMP_L,
-    QMI8658_TEMP_H,
-    QMI8658_AX_L,
-    QMI8658_AX_H,
-    QMI8658_AY_L,
-    QMI8658_AY_H,
-    QMI8658_AZ_L,
-    QMI8658_AZ_H,
-    QMI8658_GX_L,
-    QMI8658_GX_H,
-    QMI8658_GY_L,
-    QMI8658_GY_H,
-    QMI8658_GZ_L,
-    QMI8658_GZ_H,
-    QMI8658_COD_STATUS = 70,
-    QMI8658_dQW_L = 73,
-    QMI8658_dQW_H,
-    QMI8658_dQX_L,
-    QMI8658_dQX_H,
-    QMI8658_dQY_L,
-    QMI8658_dQY_H,
-    QMI8658_dQZ_L,
-    QMI8658_dQZ_H,
-    QMI8658_dVX_L,
-    QMI8658_dVX_H,
-    QMI8658_dVY_L,
-    QMI8658_dVY_H,
-    QMI8658_dVZ_L,
-    QMI8658_dVZ_H,
-    QMI8658_TAP_STATUS = 89,
-    QMI8658_STEP_CNT_LOW,
-    QMI8658_STEP_CNT_MIDL,
-    QMI8658_STEP_CNT_HIGH,
-    QMI8658_RESET = 96
+    QMI8658_WHO_AM_I,        // 芯片 ID 寄存器（应读取 0x05）
+    QMI8658_REVISION_ID,     // 版本 ID 寄存器
+    QMI8658_CTRL1,           // 控制寄存器1：地址自动递增等
+    QMI8658_CTRL2,           // 控制寄存器2：加速度计配置（量程、采样率）
+    QMI8658_CTRL3,           // 控制寄存器3：陀螺仪配置（量程、采样率）
+    QMI8658_CTRL4,           // 控制寄存器4：磁力计配置
+    QMI8658_CTRL5,           // 控制寄存器5：低通滤波器配置
+    QMI8658_CTRL6,           // 控制寄存器6：运动检测配置
+    QMI8658_CTRL7,           // 控制寄存器7：传感器使能控制
+    QMI8658_CTRL8,           // 控制寄存器8：其他功能配置
+    QMI8658_CTRL9,           // 控制寄存器9：命令寄存器
+    QMI8658_CATL1_L,         // 校准寄存器1低字节
+    QMI8658_CATL1_H,         // 校准寄存器1高字节
+    QMI8658_CATL2_L,         // 校准寄存器2低字节
+    QMI8658_CATL2_H,         // 校准寄存器2高字节
+    QMI8658_CATL3_L,         // 校准寄存器3低字节
+    QMI8658_CATL3_H,         // 校准寄存器3高字节
+    QMI8658_CATL4_L,         // 校准寄存器4低字节
+    QMI8658_CATL4_H,         // 校准寄存器4高字节
+    QMI8658_FIFO_WTM_TH,     // FIFO 水位阈值
+    QMI8658_FIFO_CTRL,       // FIFO 控制寄存器
+    QMI8658_FIFO_SMPL_CNT,   // FIFO 样本计数
+    QMI8658_FIFO_STATUS,     // FIFO 状态寄存器
+    QMI8658_FIFO_DATA,       // FIFO 数据寄存器
+    QMI8658_STATUSINT = 45,  // 中断状态寄存器
+    QMI8658_STATUS0,         // 状态寄存器0（数据就绪标志）
+    QMI8658_STATUS1,         // 状态寄存器1
+    QMI8658_TIMESTAMP_LOW,       // 时间戳低字节
+    QMI8658_TIMESTAMP_MID,       // 时间戳中字节
+    QMI8658_TIMESTAMP_HIGH,      // 时间戳高字节
+    QMI8658_TEMP_L,              // 温度数据低字节
+    QMI8658_TEMP_H,              // 温度数据高字节
+    QMI8658_AX_L,                // 加速度 X 轴低字节
+    QMI8658_AX_H,                // 加速度 X 轴高字节
+    QMI8658_AY_L,                // 加速度 Y 轴低字节
+    QMI8658_AY_H,                // 加速度 Y 轴高字节
+    QMI8658_AZ_L,                // 加速度 Z 轴低字节
+    QMI8658_AZ_H,                // 加速度 Z 轴高字节
+    QMI8658_GX_L,                // 陀螺仪 X 轴低字节
+    QMI8658_GX_H,                // 陀螺仪 X 轴高字节
+    QMI8658_GY_L,                // 陀螺仪 Y 轴低字节
+    QMI8658_GY_H,                // 陀螺仪 Y 轴高字节
+    QMI8658_GZ_L,                // 陀螺仪 Z 轴低字节
+    QMI8658_GZ_H,                // 陀螺仪 Z 轴高字节
+    QMI8658_COD_STATUS = 70,     // 坐标系统状态
+    QMI8658_dQW_L = 73,          // 四元数 W 分量低字节
+    QMI8658_dQW_H,               // 四元数 W 分量高字节
+    QMI8658_dQX_L,               // 四元数 X 分量低字节
+    QMI8658_dQX_H,               // 四元数 X 分量高字节
+    QMI8658_dQY_L,               // 四元数 Y 分量低字节
+    QMI8658_dQY_H,               // 四元数 Y 分量高字节
+    QMI8658_dQZ_L,               // 四元数 Z 分量低字节
+    QMI8658_dQZ_H,               // 四元数 Z 分量高字节
+    QMI8658_dVX_L,               // 速度 X 分量低字节
+    QMI8658_dVX_H,               // 速度 X 分量高字节
+    QMI8658_dVY_L,               // 速度 Y 分量低字节
+    QMI8658_dVY_H,               // 速度 Y 分量高字节
+    QMI8658_dVZ_L,               // 速度 Z 分量低字节
+    QMI8658_dVZ_H,               // 速度 Z 分量高字节
+    QMI8658_TAP_STATUS = 89,     // 敲击检测状态
+    QMI8658_STEP_CNT_LOW,        // 计步器计数低字节
+    QMI8658_STEP_CNT_MIDL,       // 计步器计数中字节
+    QMI8658_STEP_CNT_HIGH,       // 计步器计数高字节
+    QMI8658_RESET = 96           // 软复位寄存器（写入 0xb0 复位）
 };
 
 enum CommandTable
@@ -124,32 +156,67 @@ enum CommandTable
     CTRL_CMD_APPLY_GYRO_GAINS = 0xAA,
 };
 
-// 倾角结构体
+/**
+ * @brief IMU 传感器处理后的数据结构
+ *
+ * 包含转换为物理单位的加速度、角速度和姿态角数据
+ */
 typedef struct
 {
-    // 计算数据
-    float acc_x; // 前后轴
-    float acc_y; // 左右轴
-    float acc_z; // 上下轴
-    float gyr_x; // 前后轴
-    float gyr_y; // 左右轴
-    float gyr_z; // 上下轴
-    float pitch; // 俯仰角
-    float roll;  // 横滚角
-    float yaw;   // 偏航角
+    // 加速度数据（单位：g，重力加速度）
+    float acc_x; // X 轴加速度（前后方向）
+    float acc_y; // Y 轴加速度（左右方向）
+    float acc_z; // Z 轴加速度（上下方向）
+
+    // 角速度数据（单位：dps，度/秒）
+    float gyr_x; // X 轴角速度（绕前后轴旋转）
+    float gyr_y; // Y 轴角速度（绕左右轴旋转）
+    float gyr_z; // Z 轴角速度（绕上下轴旋转）
+
+    // 姿态角数据（单位：度）
+    float pitch; // 俯仰角（绕 Y 轴旋转，前后倾斜）
+    float roll;  // 横滚角（绕 X 轴旋转，左右倾斜）
+    float yaw;   // 偏航角（绕 Z 轴旋转，航向角）
 } t_sQMI8658;
 
-// 倾角结构体原始值
+/**
+ * @brief IMU 传感器原始数据结构
+ *
+ * 包含从寄存器读取的 16 位原始 ADC 值，未经单位转换
+ */
 typedef struct
 {
-    int16_t acc_x_raw;
-    int16_t acc_y_raw;
-    int16_t acc_z_raw;
-    int16_t gyr_x_raw;
-    int16_t gyr_y_raw;
-    int16_t gyr_z_raw;
+    int16_t acc_x_raw; // X 轴加速度原始值（-32768 ~ +32767）
+    int16_t acc_y_raw; // Y 轴加速度原始值
+    int16_t acc_z_raw; // Z 轴加速度原始值
+    int16_t gyr_x_raw; // X 轴陀螺仪原始值（-32768 ~ +32767）
+    int16_t gyr_y_raw; // Y 轴陀螺仪原始值
+    int16_t gyr_z_raw; // Z 轴陀螺仪原始值
 } t_sQMI8658_raw;
 
+/**
+ * @brief  初始化 IMU 传感器
+ *
+ * 配置 I2C 总线并初始化 QMI8658 传感器，包括：
+ * - 配置 I2C 总线（400kHz，GPIO1/GPIO2）
+ * - 验证芯片 ID
+ * - 配置加速度计（±4g，250Hz）
+ * - 配置陀螺仪（±512dps，250Hz）
+ * - 启用低通滤波器
+ *
+ * @note   此函数会阻塞直到传感器初始化成功
+ */
 void imu_init(void);
-void imu_data_resolution(t_sQMI8658 *p); // 数据采集
+
+/**
+ * @brief  读取并处理 IMU 传感器数据
+ *
+ * 从 QMI8658 读取原始传感器数据，并转换为物理单位和姿态角
+ *
+ * @param  p 指向 t_sQMI8658 结构体的指针，用于存储处理后的数据
+ *
+ * @note   此函数会更新加速度、角速度和姿态角（pitch/roll/yaw）
+ */
+void imu_data_resolution(t_sQMI8658 *p);
+
 #endif

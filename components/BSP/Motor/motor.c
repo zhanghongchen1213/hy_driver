@@ -39,29 +39,55 @@ static dual_motor_t g_dual_motor = {
     .encoder_b = {.pcnt_unit = NULL, .pulse_count = 0, .speed_rpm = 0.0f, .mode = ENCODER_MODE_X4, .is_initialized = false},
     .is_initialized = false};
 
+/* ========== 内部函数声明 ========== */
+
 static esp_err_t tb6612fng_init(tb6612fng_motor_t *motor);
 static bool IRAM_ATTR encoder_overflow_callback(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx);
 static esp_err_t encoder_get_count(encoder_t *encoder, int32_t *count);
 static esp_err_t encoder_clear_count(encoder_t *encoder);
 static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int phase_b_pin, int unit_id);
 static esp_err_t encode_init(void);
-//*=========== 内部函数 ==============*//
+
+/* ========== 内部函数实现 ========== */
+
+/**
+ * @brief  PCNT 编码器溢出中断回调函数
+ *
+ * 当 PCNT 硬件计数器达到边界值（±32767）时触发此中断，
+ * 通过软件累积溢出次数来扩展计数范围，实现无限计数。
+ *
+ * 溢出累积机制：
+ * - 正向溢出（达到 +32767）：累加 +32767 到软件计数器
+ * - 反向溢出（达到 -32768）：累加 -32768 到软件计数器
+ * - 实际计数 = 硬件计数 + 软件累积值
+ *
+ * @param  unit      PCNT 单元句柄
+ * @param  edata     溢出事件数据（包含触发的监视点值）
+ * @param  user_ctx  用户上下文指针（指向 encoder_t 结构体）
+ *
+ * @retval false     不需要唤醒高优先级任务
+ *
+ * @note   使用 IRAM_ATTR 属性将函数放入 IRAM，确保中断响应速度
+ * @note   此函数在中断上下文中执行，必须保持简短高效
+ */
 static bool IRAM_ATTR encoder_overflow_callback(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx)
 {
     encoder_t *encoder = (encoder_t *)user_ctx;
     if (encoder != NULL)
     {
-        // 处理溢出事件
+        // 检查溢出方向并累积计数
         if (edata->watch_point_value == PCNT_UNIT_MAX_COUNT)
         {
+            // 正向溢出：计数器从 +32767 回绕到 -32768
             encoder->pulse_count += PCNT_UNIT_MAX_COUNT;
         }
         else if (edata->watch_point_value == PCNT_UNIT_MIN_COUNT)
         {
+            // 反向溢出：计数器从 -32768 回绕到 +32767
             encoder->pulse_count += PCNT_UNIT_MIN_COUNT;
         }
     }
-    return false;
+    return false; // 不需要唤醒高优先级任务
 }
 
 /**
@@ -128,13 +154,16 @@ static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int ph
 
     esp_err_t ret;
 
-    // 配置GPIO引脚 - 编码器信号不使用内部上拉/下拉电阻
+    // =========================================================================
+    // 步骤 1: 配置 GPIO 引脚
+    // =========================================================================
+    // 编码器信号由外部编码器模块提供，不需要内部上拉/下拉电阻
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << phase_a_pin) | (1ULL << phase_b_pin),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,     // 禁用内部上拉电阻，让编码器提供信号
-        .pull_down_en = GPIO_PULLDOWN_DISABLE, // 禁用内部下拉电阻
-        .intr_type = GPIO_INTR_DISABLE};
+        .pin_bit_mask = (1ULL << phase_a_pin) | (1ULL << phase_b_pin), // 选中 A/B 相引脚
+        .mode = GPIO_MODE_INPUT,                                        // 输入模式
+        .pull_up_en = GPIO_PULLUP_DISABLE,                              // 禁用内部上拉（编码器自带上拉）
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,                          // 禁用内部下拉
+        .intr_type = GPIO_INTR_DISABLE};                                // 不使用 GPIO 中断（PCNT 硬件处理）
     ret = gpio_config(&io_conf);
     if (ret != ESP_OK)
     {
@@ -143,11 +172,14 @@ static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int ph
     }
     ESP_LOGI(TAG, "编码器GPIO配置完成 - A相(GPIO%d), B相(GPIO%d)", phase_a_pin, phase_b_pin);
 
-    // 配置PCNT单元
+    // =========================================================================
+    // 步骤 2: 配置 PCNT 单元
+    // =========================================================================
+    // PCNT（脉冲计数器）单元配置，用于硬件计数编码器脉冲
     pcnt_unit_config_t unit_config = {
-        .high_limit = PCNT_UNIT_MAX_COUNT,
-        .low_limit = PCNT_UNIT_MIN_COUNT,
-        .flags.accum_count = true, // 启用累计计数
+        .high_limit = PCNT_UNIT_MAX_COUNT,  // 正向计数上限：+32767
+        .low_limit = PCNT_UNIT_MIN_COUNT,   // 反向计数下限：-32768
+        .flags.accum_count = true,          // 启用累计计数（不自动清零）
     };
 
     ret = pcnt_new_unit(&unit_config, &encoder->pcnt_unit);
@@ -157,12 +189,29 @@ static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int ph
         return ret;
     }
 
-    // 配置通道0 (A相作为脉冲输入，B相作为方向控制)
+    // =========================================================================
+    // 步骤 3: 配置 PCNT 通道（4 倍频正交编码）
+    // =========================================================================
+    /**
+     * 4 倍频正交编码原理：
+     *
+     * 正交编码器输出两路相位差 90° 的方波信号（A 相和 B 相）：
+     * - 正转时：A 相超前 B 相 90°
+     * - 反转时：B 相超前 A 相 90°
+     *
+     * 4 倍频模式通过检测 A/B 相的所有边沿（上升沿和下降沿）实现：
+     * - 通道 0：A 相边沿触发，B 相电平控制方向
+     * - 通道 1：B 相边沿触发，A 相电平控制方向
+     *
+     * 每个编码器周期产生 4 个计数，分辨率提升 4 倍
+     */
+
+    // 配置通道 0：A 相作为脉冲输入，B 相作为方向控制
     pcnt_chan_config_t chan_a_config = {
-        .edge_gpio_num = phase_a_pin,
-        .level_gpio_num = phase_b_pin,
-        .flags.invert_edge_input = false,
-        .flags.invert_level_input = false,
+        .edge_gpio_num = phase_a_pin,       // A 相引脚：检测边沿变化
+        .level_gpio_num = phase_b_pin,      // B 相引脚：判断旋转方向
+        .flags.invert_edge_input = false,   // 不反转 A 相信号
+        .flags.invert_level_input = false,  // 不反转 B 相信号
     };
 
     pcnt_channel_handle_t pcnt_chan_a = NULL;
@@ -174,12 +223,12 @@ static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int ph
         return ret;
     }
 
-    // 配置通道1 (B相作为脉冲输入，A相作为方向控制)
+    // 配置通道 1：B 相作为脉冲输入，A 相作为方向控制
     pcnt_chan_config_t chan_b_config = {
-        .edge_gpio_num = phase_b_pin,
-        .level_gpio_num = phase_a_pin,
-        .flags.invert_edge_input = false,
-        .flags.invert_level_input = false,
+        .edge_gpio_num = phase_b_pin,       // B 相引脚：检测边沿变化
+        .level_gpio_num = phase_a_pin,      // A 相引脚：判断旋转方向
+        .flags.invert_edge_input = false,   // 不反转 B 相信号
+        .flags.invert_level_input = false,  // 不反转 A 相信号
     };
 
     pcnt_channel_handle_t pcnt_chan_b = NULL;
@@ -191,29 +240,60 @@ static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int ph
         return ret;
     }
 
-    // 设置边沿和电平动作 - 根据ESP-IDF官方示例实现4倍频正交编码
-    // 通道A: A相边沿触发，B相电平控制方向 - 正确配置
-    ret = pcnt_channel_set_edge_action(pcnt_chan_a, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_DECREASE);
+    // =========================================================================
+    // 步骤 4: 设置边沿和电平动作（4 倍频正交编码核心配置）
+    // =========================================================================
+    /**
+     * 边沿动作和电平动作配置说明：
+     *
+     * 通道 A 配置（A 相边沿触发，B 相电平控制方向）：
+     * - 边沿动作：上升沿 +1，下降沿 -1
+     * - 电平动作：B 相低电平保持，B 相高电平反转
+     *
+     * 通道 B 配置（B 相边沿触发，A 相电平控制方向）：
+     * - 边沿动作：上升沿 +1，下降沿 -1
+     * - 电平动作：A 相低电平反转，A 相高电平保持
+     *
+     * 组合效果：
+     * - 正转时（A 超前 B 90°）：计数递增
+     * - 反转时（B 超前 A 90°）：计数递减
+     * - 每个编码器周期产生 4 个计数（A/B 相各 2 个边沿）
+     */
+
+    // 配置通道 A 的边沿动作
+    ret = pcnt_channel_set_edge_action(pcnt_chan_a,
+                                       PCNT_CHANNEL_EDGE_ACTION_INCREASE,  // 上升沿：计数 +1
+                                       PCNT_CHANNEL_EDGE_ACTION_DECREASE); // 下降沿：计数 -1
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "设置通道A边沿动作失败: %s", esp_err_to_name(ret));
         return ret;
     }
-    ret = pcnt_channel_set_level_action(pcnt_chan_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE);
+
+    // 配置通道 A 的电平动作（B 相电平控制方向）
+    ret = pcnt_channel_set_level_action(pcnt_chan_a,
+                                        PCNT_CHANNEL_LEVEL_ACTION_KEEP,    // B 相低电平：保持边沿动作
+                                        PCNT_CHANNEL_LEVEL_ACTION_INVERSE); // B 相高电平：反转边沿动作
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "设置通道A电平动作失败: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    // 通道B: B相边沿触发，A相电平控制方向 - 修正为与官方示例一致
-    ret = pcnt_channel_set_edge_action(pcnt_chan_b, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_DECREASE);
+    // 配置通道 B 的边沿动作
+    ret = pcnt_channel_set_edge_action(pcnt_chan_b,
+                                       PCNT_CHANNEL_EDGE_ACTION_INCREASE,  // 上升沿：计数 +1
+                                       PCNT_CHANNEL_EDGE_ACTION_DECREASE); // 下降沿：计数 -1
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "设置通道B边沿动作失败: %s", esp_err_to_name(ret));
         return ret;
     }
-    ret = pcnt_channel_set_level_action(pcnt_chan_b, PCNT_CHANNEL_LEVEL_ACTION_INVERSE, PCNT_CHANNEL_LEVEL_ACTION_KEEP);
+
+    // 配置通道 B 的电平动作（A 相电平控制方向）
+    ret = pcnt_channel_set_level_action(pcnt_chan_b,
+                                        PCNT_CHANNEL_LEVEL_ACTION_INVERSE, // A 相低电平：反转边沿动作
+                                        PCNT_CHANNEL_LEVEL_ACTION_KEEP);   // A 相高电平：保持边沿动作
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "设置通道B电平动作失败: %s", esp_err_to_name(ret));
@@ -222,9 +302,13 @@ static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int ph
 
     ESP_LOGI(TAG, "PCNT通道配置完成 - 4倍频正交编码模式");
 
-    // 设置毛刺滤波器 - 滤除小于1us的毛刺信号
+    // =========================================================================
+    // 步骤 5: 配置毛刺滤波器
+    // =========================================================================
+    // 毛刺滤波器用于滤除编码器信号中的高频噪声和抖动
+    // 小于 1us 的脉冲将被忽略，提高计数准确性
     pcnt_glitch_filter_config_t filter_config = {
-        .max_glitch_ns = 1000, // 1微秒
+        .max_glitch_ns = 1000, // 滤波阈值：1 微秒（1000 纳秒）
     };
     ret = pcnt_unit_set_glitch_filter(encoder->pcnt_unit, &filter_config);
     if (ret != ESP_OK)
@@ -236,7 +320,11 @@ static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int ph
         ESP_LOGI(TAG, "PCNT毛刺滤波器配置成功 (1us)");
     }
 
-    // 添加监视点用于溢出检测
+    // =========================================================================
+    // 步骤 6: 添加溢出监视点
+    // =========================================================================
+    // 监视点用于检测计数器溢出，触发中断回调函数
+    // 当计数器达到 ±32767 边界时，触发 encoder_overflow_callback()
     ret = pcnt_unit_add_watch_point(encoder->pcnt_unit, PCNT_UNIT_MAX_COUNT);
     if (ret != ESP_OK)
     {
@@ -249,9 +337,12 @@ static esp_err_t encoder_init_single(encoder_t *encoder, int phase_a_pin, int ph
         ESP_LOGE(TAG, "添加最小值监视点失败: %s", esp_err_to_name(ret));
     }
 
-    // 注册事件回调
+    // =========================================================================
+    // 步骤 7: 注册溢出事件回调函数
+    // =========================================================================
+    // 注册回调函数，用于在计数器溢出时累积计数值
     pcnt_event_callbacks_t cbs = {
-        .on_reach = encoder_overflow_callback,
+        .on_reach = encoder_overflow_callback, // 达到监视点时调用
     };
     ret = pcnt_unit_register_event_callbacks(encoder->pcnt_unit, &cbs, encoder);
     if (ret != ESP_OK)
@@ -948,29 +1039,58 @@ esp_err_t motor_get_rpm(motor_id_t motor_id, float *rpm)
         return ESP_OK;
     }
 
-    int32_t count_diff = current_count - *last_count;
-    *last_count = current_count;
-    *last_time = current_time;
+    // =========================================================================
+    // RPM 计算算法（基于编码器计数差分）
+    // =========================================================================
 
-    // 计算转速 - N20电机官方参数
+    int32_t count_diff = current_count - *last_count; // 计数差值（可正可负）
+    *last_count = current_count;                      // 更新上次计数值
+    *last_time = current_time;                        // 更新上次时间戳
+
+    /**
+     * RPM 计算公式推导：
+     *
+     * 已知参数：
+     * - ENCODER_PPR = 7（电机轴基础脉冲数，每转 7 个脉冲）
+     * - ENCODER_OUTPUT_PPR = 2654.1（输出轴编码线数，每转 2654.1 线）
+     * - 倍频系数 = 4（4 倍频模式）
+     * - 减速比 = ENCODER_OUTPUT_PPR / ENCODER_PPR = 379.157
+     *
+     * 计算步骤：
+     *
+     * 步骤 1：计算电机轴转速（RPS）
+     *   电机轴每转计数 = ENCODER_PPR × 倍频系数 = 7 × 4 = 28
+     *   电机轴转速(RPS) = (计数差 / 时间差) / 电机轴每转计数
+     *
+     * 步骤 2：计算输出轴转速（RPS）
+     *   输出轴转速(RPS) = 电机轴转速(RPS) / 减速比
+     *
+     * 步骤 3：转换为 RPM
+     *   输出轴转速(RPM) = 输出轴转速(RPS) × 60
+     *
+     * 示例：
+     *   假设 1 秒内计数差为 280，倍频系数为 4
+     *   电机轴转速 = (280 / 1) / 28 = 10 RPS = 600 RPM
+     *   输出轴转速 = 10 / 379.157 = 0.0264 RPS = 1.58 RPM
+     */
+
+    // 将时间差从微秒转换为秒
     float time_sec = (float)time_diff_us / 1000000.0f;
-    int multiplier = (encoder->mode == ENCODER_MODE_X1) ? 1 : (encoder->mode == ENCODER_MODE_X2) ? 2
-                                                                                                 : 4;
 
-    // 1.计算电机轴实际转速（转/秒）
-    // 电机轴每转计数 = 基础脉冲数 * 倍频系数
-    float motor_counts_per_rev = ENCODER_PPR * multiplier;
-    // 电机轴转速(RPS)
-    float motor_rps = ((float)count_diff / time_sec) / motor_counts_per_rev;
+    // 获取倍频系数（1x、2x 或 4x）
+    int multiplier = (encoder->mode == ENCODER_MODE_X1) ? 1 :
+                     (encoder->mode == ENCODER_MODE_X2) ? 2 : 4;
 
-    // 2.计算输出轴实际转速（转/秒）
-    float real_gear_ratio = ENCODER_OUTPUT_PPR / ENCODER_PPR;
-    // 输出轴转速(RPS) = 电机轴转速(RPS) / 实际减速比
-    float output_rps = motor_rps / real_gear_ratio;
+    // 步骤 1：计算电机轴实际转速（转/秒）
+    float motor_counts_per_rev = ENCODER_PPR * multiplier; // 电机轴每转计数（7 × 4 = 28）
+    float motor_rps = ((float)count_diff / time_sec) / motor_counts_per_rev; // 电机轴转速(RPS)
 
-    // 3.计算输出轴实际转速（转/分钟）
-    // 输出轴转速(RPM) = 输出轴转速(RPS) * 60
-    encoder->speed_rpm = output_rps * 60.0f;
+    // 步骤 2：计算输出轴实际转速（转/秒）
+    float real_gear_ratio = ENCODER_OUTPUT_PPR / ENCODER_PPR; // 实际减速比（2654.1 / 7 = 379.157）
+    float output_rps = motor_rps / real_gear_ratio;           // 输出轴转速(RPS)
+
+    // 步骤 3：计算输出轴实际转速（转/分钟）
+    encoder->speed_rpm = output_rps * 60.0f; // 输出轴转速(RPM)
     *rpm = encoder->speed_rpm;
 
     static float last_output_rpm = 0.0f;

@@ -1,6 +1,24 @@
+/**
+ * @file servo_control.c
+ * @brief 三舵机统一角度控制系统实现
+ *
+ * 本文件实现基于 LEDC PWM 的舵机控制系统，采用统一角度系统设计。
+ *
+ * @author ZHC
+ * @date 2025
+ * @version 1.0
+ */
+
 #include "servo_control.h"
 
 static const char *TAG = "SERVO";
+
+/**
+ * @brief 舵机当前统一角度缓存
+ *
+ * 存储三个舵机的当前统一角度值（0-60°），用于状态查询。
+ * 索引对应关系：[0]=SERVO_A, [1]=SERVO_B, [2]=SERVO_C
+ */
 static int16_t s_servo_actual_angles[3] = {0, 0, 0};
 void servo_init(void)
 {
@@ -40,11 +58,53 @@ void servo_reset(void)
     ESP_LOGI(TAG, "舵机复位完成 - 所有舵机设置为统一角度%d°", SERVO_UNIFIED_ZERO_ANGLE);
 }
 
+/**
+ * @brief  设置指定舵机的角度
+ *
+ * 角度映射公式说明：
+ * =========================================================================
+ * 统一角度系统通过线性映射将逻辑角度转换为各舵机的实际角度。
+ *
+ * 映射公式：
+ * 实际角度 = 零位角度 ± 统一角度
+ *
+ * 各舵机映射关系：
+ *
+ * 1. SERVO_A（右手舵机）- 正向映射：
+ *    公式：actual_angle = SERVO_A_ZERO_POSITION + unified_angle
+ *    示例：actual_angle = 0 + unified_angle
+ *    映射表：
+ *      统一角度 0°  → 实际角度 0°
+ *      统一角度 30° → 实际角度 30°
+ *      统一角度 60° → 实际角度 60°
+ *
+ * 2. SERVO_B（左手舵机）- 反向映射（镜像对称）：
+ *    公式：actual_angle = SERVO_B_ZERO_POSITION - unified_angle
+ *    示例：actual_angle = 180 - unified_angle
+ *    映射表：
+ *      统一角度 0°  → 实际角度 180°
+ *      统一角度 30° → 实际角度 150°
+ *      统一角度 60° → 实际角度 120°
+ *    说明：反向映射实现左右手对称动作
+ *
+ * 3. SERVO_C（腰部舵机）- 带偏移的正向映射：
+ *    公式：actual_angle = SERVO_C_ZERO_POSITION + unified_angle
+ *    示例：actual_angle = 30 + unified_angle
+ *    映射表：
+ *      统一角度 0°  → 实际角度 30°
+ *      统一角度 30° → 实际角度 60°
+ *      统一角度 60° → 实际角度 90°
+ *    说明：30° 偏移避免机械结构干涉
+ * =========================================================================
+ *
+ * @param  id             目标舵机标识
+ * @param  unified_angle  统一角度值（0-60°）
+ */
 void servo_set_angle(servo_id_t id, int16_t unified_angle)
 {
     int16_t actual_angle = 0;
 
-    // 参数范围检查
+    /* 参数范围检查 */
     if (unified_angle < SERVO_UNIFIED_ZERO_ANGLE || unified_angle > SERVO_UNIFIED_MAX_ANGLE)
     {
         ESP_LOGW(TAG, "统一角度%d超出范围[%d-%d]", unified_angle, SERVO_UNIFIED_ZERO_ANGLE, SERVO_UNIFIED_MAX_ANGLE);
@@ -54,8 +114,7 @@ void servo_set_angle(servo_id_t id, int16_t unified_angle)
     switch (id)
     {
     case SERVO_A:
-        // 右手舵机：统一角度直接映射到实际角度
-        // 统一角度0° -> 实际角度0°，统一角度180° -> 实际角度180°
+        /* 右手舵机：正向映射（统一角度 = 实际角度） */
         actual_angle = SERVO_A_ZERO_POSITION + unified_angle;
         iot_servo_write_angle(LEDC_LOW_SPEED_MODE, SERVO_LEDC_A, actual_angle);
         s_servo_actual_angles[0] = unified_angle;
@@ -63,8 +122,7 @@ void servo_set_angle(servo_id_t id, int16_t unified_angle)
         break;
 
     case SERVO_B:
-        // 左手舵机：统一角度反向映射到实际角度
-        // 统一角度0° -> 实际角度180°，统一角度180° -> 实际角度0°
+        /* 左手舵机：反向映射（镜像对称，实现左右手对称动作） */
         actual_angle = SERVO_B_ZERO_POSITION - unified_angle;
         iot_servo_write_angle(LEDC_LOW_SPEED_MODE, SERVO_LEDC_B, actual_angle);
         s_servo_actual_angles[1] = unified_angle;
@@ -72,8 +130,7 @@ void servo_set_angle(servo_id_t id, int16_t unified_angle)
         break;
 
     case SERVO_C:
-        // 腰部舵机：统一角度加上零位偏移
-        // 统一角度0° -> 实际角度30°，统一角度180° -> 实际角度210°
+        /* 腰部舵机：带偏移的正向映射（30° 偏移避免机械干涉） */
         actual_angle = SERVO_C_ZERO_POSITION + unified_angle;
         iot_servo_write_angle(LEDC_LOW_SPEED_MODE, SERVO_LEDC_C, actual_angle);
         s_servo_actual_angles[2] = unified_angle;
