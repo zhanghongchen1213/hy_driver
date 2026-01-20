@@ -60,6 +60,13 @@
 #define SERVO_UNIFIED_ZERO_ANGLE 0  ///< 统一角度系统的零位角度（机器人标准姿态）
 #define SERVO_UNIFIED_MAX_ANGLE 60  ///< 统一角度系统的最大角度（运动范围限制）
 
+/* ========== 舵机速度控制参数 ========== */
+
+#define SERVO_SPEED_SLOW_STEP    1    ///< 缓慢模式：每步移动1度
+#define SERVO_SPEED_SLOW_DELAY   30   ///< 缓慢模式：每步延时30ms
+#define SERVO_SPEED_NORMAL_STEP  2    ///< 正常模式：每步移动2度
+#define SERVO_SPEED_NORMAL_DELAY 15   ///< 正常模式：每步延时15ms
+
 /* ========== 各舵机零位实际角度修正量 ========== */
 
 /**
@@ -88,6 +95,18 @@ typedef enum
     SERVO_B,     ///< 舵机 B（左手）
     SERVO_C,     ///< 舵机 C（腰部）
 } servo_id_t;
+
+/**
+ * @brief 舵机速度等级枚举
+ *
+ * 控制舵机从当前位置运动到目标位置的速度
+ */
+typedef enum
+{
+    SERVO_SPEED_SLOW = 0, ///< 缓慢：平稳运动，适合精细动作
+    SERVO_SPEED_NORMAL,   ///< 正常：中等速度
+    SERVO_SPEED_FAST,     ///< 快速：直接跳转到目标位置（默认）
+} servo_speed_t;
 
 /* ========== 数据结构定义 ========== */
 
@@ -135,14 +154,17 @@ void servo_reset(void);
  * @brief  设置指定舵机的角度
  *
  * 使用统一角度系统设置舵机角度，内部自动映射到实际角度。
+ * 支持三种速度模式控制舵机运动过程。
  *
  * @param  id     目标舵机标识（SERVO_A、SERVO_B 或 SERVO_C）
  * @param  angle  统一角度值（0-60°）
+ * @param  speed  运动速度等级（SERVO_SPEED_SLOW、SERVO_SPEED_NORMAL 或 SERVO_SPEED_FAST）
  *
  * @note   超出范围的角度值将被忽略并输出警告日志
- * @note   角度映射公式详见 servo_set_angle() 函数实现
+ * @note   SERVO_SPEED_FAST 模式下直接跳转到目标角度
+ * @note   SERVO_SPEED_SLOW/NORMAL 模式下渐进运动到目标角度
  */
-void servo_set_angle(servo_id_t id, int16_t angle);
+void servo_set_angle(servo_id_t id, int16_t angle, servo_speed_t speed);
 
 /**
  * @brief  获取所有舵机的当前角度

@@ -246,9 +246,9 @@ static void brain_execute_command(const uart_downlink_packet_t *pkt)
     ESP_LOGI(TAG, "更新电机控制: 目标线速度=%.2f, 目标角速度=%.2f, 左目标=%.2f, 右目标=%.2f",
              pkt->linear_vel, pkt->angular_vel, target_left_rpm, target_right_rpm);
 #if SERVO_DEBUG
-    servo_set_angle(SERVO_A, pkt->servo_a_angle);
-    servo_set_angle(SERVO_B, pkt->servo_b_angle);
-    servo_set_angle(SERVO_C, pkt->servo_c_angle);
+    servo_set_angle(SERVO_A, pkt->servo_a_angle, SERVO_SPEED_FAST);
+    servo_set_angle(SERVO_B, pkt->servo_b_angle, SERVO_SPEED_FAST);
+    servo_set_angle(SERVO_C, pkt->servo_c_angle, SERVO_SPEED_FAST);
 #else
     (void)pkt->servo_a_angle;
     (void)pkt->servo_b_angle;

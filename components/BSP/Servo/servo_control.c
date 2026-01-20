@@ -51,15 +51,59 @@ void servo_init(void)
 
 void servo_reset(void)
 {
-    // 使用统一角度系统设置所有舵机到零位（统一角度0°）
-    servo_set_angle(SERVO_A, SERVO_UNIFIED_ZERO_ANGLE);
-    servo_set_angle(SERVO_B, SERVO_UNIFIED_ZERO_ANGLE);
-    servo_set_angle(SERVO_C, SERVO_UNIFIED_ZERO_ANGLE);
+    // 使用统一角度系统设置所有舵机到零位（统一角度0°），使用快速模式
+    servo_set_angle(SERVO_A, SERVO_UNIFIED_ZERO_ANGLE, SERVO_SPEED_NORMAL);
+    servo_set_angle(SERVO_B, SERVO_UNIFIED_ZERO_ANGLE, SERVO_SPEED_NORMAL);
+    servo_set_angle(SERVO_C, SERVO_UNIFIED_ZERO_ANGLE, SERVO_SPEED_NORMAL);
     ESP_LOGI(TAG, "舵机复位完成 - 所有舵机设置为统一角度%d°", SERVO_UNIFIED_ZERO_ANGLE);
 }
 
 /**
- * @brief  设置指定舵机的角度
+ * @brief  内部函数：直接设置舵机到指定统一角度
+ *
+ * 该函数执行实际的角度映射和PWM设置，不包含速度控制逻辑。
+ *
+ * @param  id             目标舵机标识
+ * @param  unified_angle  统一角度值（0-60°）
+ */
+static void servo_set_angle_internal(servo_id_t id, int16_t unified_angle)
+{
+    int16_t actual_angle = 0;
+
+    switch (id)
+    {
+    case SERVO_A:
+        /* 右手舵机：正向映射（统一角度 = 实际角度） */
+        actual_angle = SERVO_A_ZERO_POSITION + unified_angle;
+        iot_servo_write_angle(LEDC_LOW_SPEED_MODE, SERVO_LEDC_A, actual_angle);
+        s_servo_actual_angles[0] = unified_angle;
+        ESP_LOGD(TAG, "舵机A：统一角度%d° -> 实际角度%d°", unified_angle, actual_angle);
+        break;
+
+    case SERVO_B:
+        /* 左手舵机：反向映射（镜像对称，实现左右手对称动作） */
+        actual_angle = SERVO_B_ZERO_POSITION - unified_angle;
+        iot_servo_write_angle(LEDC_LOW_SPEED_MODE, SERVO_LEDC_B, actual_angle);
+        s_servo_actual_angles[1] = unified_angle;
+        ESP_LOGD(TAG, "舵机B：统一角度%d° -> 实际角度%d°", unified_angle, actual_angle);
+        break;
+
+    case SERVO_C:
+        /* 腰部舵机：带偏移的正向映射（30° 偏移避免机械干涉） */
+        actual_angle = SERVO_C_ZERO_POSITION + unified_angle;
+        iot_servo_write_angle(LEDC_LOW_SPEED_MODE, SERVO_LEDC_C, actual_angle);
+        s_servo_actual_angles[2] = unified_angle;
+        ESP_LOGD(TAG, "舵机C：统一角度%d° -> 实际角度%d°", unified_angle, actual_angle);
+        break;
+
+    default:
+        ESP_LOGW(TAG, "无效的舵机ID: %d", id);
+        break;
+    }
+}
+
+/**
+ * @brief  设置指定舵机的角度（带速度控制）
  *
  * 角度映射公式说明：
  * =========================================================================
@@ -99,11 +143,10 @@ void servo_reset(void)
  *
  * @param  id             目标舵机标识
  * @param  unified_angle  统一角度值（0-60°）
+ * @param  speed          运动速度等级
  */
-void servo_set_angle(servo_id_t id, int16_t unified_angle)
+void servo_set_angle(servo_id_t id, int16_t unified_angle, servo_speed_t speed)
 {
-    int16_t actual_angle = 0;
-
     /* 参数范围检查 */
     if (unified_angle < SERVO_UNIFIED_ZERO_ANGLE || unified_angle > SERVO_UNIFIED_MAX_ANGLE)
     {
@@ -111,35 +154,43 @@ void servo_set_angle(servo_id_t id, int16_t unified_angle)
         return;
     }
 
-    switch (id)
+    /* 快速模式：直接跳转到目标角度 */
+    if (speed == SERVO_SPEED_FAST)
     {
-    case SERVO_A:
-        /* 右手舵机：正向映射（统一角度 = 实际角度） */
-        actual_angle = SERVO_A_ZERO_POSITION + unified_angle;
-        iot_servo_write_angle(LEDC_LOW_SPEED_MODE, SERVO_LEDC_A, actual_angle);
-        s_servo_actual_angles[0] = unified_angle;
-        ESP_LOGD(TAG, "舵机A：统一角度%d° -> 实际角度%d°", unified_angle, actual_angle);
-        break;
+        servo_set_angle_internal(id, unified_angle);
+        return;
+    }
 
-    case SERVO_B:
-        /* 左手舵机：反向映射（镜像对称，实现左右手对称动作） */
-        actual_angle = SERVO_B_ZERO_POSITION - unified_angle;
-        iot_servo_write_angle(LEDC_LOW_SPEED_MODE, SERVO_LEDC_B, actual_angle);
-        s_servo_actual_angles[1] = unified_angle;
-        ESP_LOGD(TAG, "舵机B：统一角度%d° -> 实际角度%d°", unified_angle, actual_angle);
-        break;
+    /* 获取当前角度 */
+    int16_t current_angle = s_servo_actual_angles[id];
 
-    case SERVO_C:
-        /* 腰部舵机：带偏移的正向映射（30° 偏移避免机械干涉） */
-        actual_angle = SERVO_C_ZERO_POSITION + unified_angle;
-        iot_servo_write_angle(LEDC_LOW_SPEED_MODE, SERVO_LEDC_C, actual_angle);
-        s_servo_actual_angles[2] = unified_angle;
-        ESP_LOGD(TAG, "舵机C：统一角度%d° -> 实际角度%d°", unified_angle, actual_angle);
-        break;
+    /* 如果已在目标位置，直接返回 */
+    if (current_angle == unified_angle)
+    {
+        return;
+    }
 
-    default:
-        ESP_LOGW(TAG, "无效的舵机ID: %d", id);
-        break;
+    /* 根据速度等级确定步进参数 */
+    int16_t step = (speed == SERVO_SPEED_SLOW) ? SERVO_SPEED_SLOW_STEP : SERVO_SPEED_NORMAL_STEP;
+    int16_t delay_ms = (speed == SERVO_SPEED_SLOW) ? SERVO_SPEED_SLOW_DELAY : SERVO_SPEED_NORMAL_DELAY;
+
+    /* 确定运动方向 */
+    int16_t direction = (unified_angle > current_angle) ? 1 : -1;
+
+    /* 渐进运动到目标角度 */
+    while (current_angle != unified_angle)
+    {
+        current_angle += direction * step;
+
+        /* 防止越过目标位置 */
+        if ((direction > 0 && current_angle > unified_angle) ||
+            (direction < 0 && current_angle < unified_angle))
+        {
+            current_angle = unified_angle;
+        }
+
+        servo_set_angle_internal(id, current_angle);
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 
