@@ -20,7 +20,7 @@
 | GitHub——ROS算法开源      | [https://github.com/zhanghongchen1213/hy_ros](https://github.com/zhanghongchen1213/hy_ros)                             |
 | GitHub——驱动器算法开源   | [https://github.com/zhanghongchen1213/hy_driver](https://github.com/zhanghongchen1213/hy_driver)                       |
 | GitHub——yolo训练算法开源 | [https://github.com/zhanghongchen1213/butter_yolov8n_train](https://github.com/zhanghongchen1213/butter_yolov8n_train) |
-| 开发教程开源           | [https://hy-ros.readthedocs.io](https://hy-ros.readthedocs.io/zh-cn/latest/1_product_introduction.html)                |
+| 开发教程开源             | [https://hy-ros.readthedocs.io](https://hy-ros.readthedocs.io/zh-cn/latest/1_product_introduction.html)                |
 
 # 📷 产品外观
 
@@ -43,10 +43,10 @@
 
 # 🎬 视频演示
 
-[![点击观看视频](https://i.imgs.ovh/2026/02/08/ylsonn.md.png)](https://ug.link/nas-zhang-GgrM/filemgr/share-download/?id=558c8c6a630d46f0b091d190e990fa9c)
+[![点击观看视频](https://i.imgs.ovh/2026/02/08/ylsonn.md.png)](https://www.bilibili.com/video/BV1hQcFzrEXS/?vd_source=d74d3e2c07a341457b5e708db2594eab)
 
 > 📺 **视频作者**：B站 @鸿尘客
-> 🔗 **视频链接**：[桌面墨水屏摆件](https://ug.link/nas-zhang-GgrM/filemgr/share-download/?id=558c8c6a630d46f0b091d190e990fa9c)
+> 🔗 **视频链接**：[黄油机器人](https://www.bilibili.com/video/BV1hQcFzrEXS/?vd_source=d74d3e2c07a341457b5e708db2594eab)
 
 # ⚙️ 硬件规格
 
@@ -127,4 +127,3 @@
 - **Foxglove Bridge**：通过 Web 端远程监控机器人状态
 - **数字孪生可视化**：实时同步机器人位姿、关节角度、传感器数据至可视化界面
 - **多输入控制**：支持键盘、手柄、语音等多种遥控方式
-
